@@ -104,8 +104,15 @@ function init_db(): void {
         harga_jual DECIMAL(14,2) NOT NULL DEFAULT 0,
         stok INT NOT NULL DEFAULT 0,
         stok_min INT NOT NULL DEFAULT 5,
+        lokasi_rak VARCHAR(50) NOT NULL DEFAULT '',
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) $eng");
+    // Migrasi: tambah kolom lokasi_rak untuk DB lama yang belum punya kolom ini.
+    $hasRak = $db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+                          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME='parts' AND COLUMN_NAME='lokasi_rak'")->fetchColumn();
+    if (!$hasRak) {
+        $db->exec("ALTER TABLE parts ADD COLUMN lokasi_rak VARCHAR(50) NOT NULL DEFAULT '' AFTER stok_min");
+    }
 
     $db->exec("CREATE TABLE IF NOT EXISTS stock_movements (
         id INT AUTO_INCREMENT PRIMARY KEY,

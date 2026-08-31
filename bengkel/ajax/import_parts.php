@@ -55,6 +55,7 @@ foreach ($rows as $i => $r) {
         'stok'     => (int)($row['stok'] ?? 0),
         'stok_min' => (int)($row['stok_min'] ?? 5),
         'barcode'  => trim((string)($row['barcode'] ?? '')),
+        'lokasi_rak' => trim((string)($row['lokasi_rak'] ?? $row['rak'] ?? '')),
         'status'   => $status,
         'reason'   => $reason,
     ];
@@ -76,8 +77,8 @@ if ($isPreview) {
 }
 
 // ---- Eksekusi commit -----------------------------------------
-$ins  = $db->prepare("INSERT INTO parts (kode, nama, kategori, harga_beli, harga_jual, stok, stok_min, barcode) VALUES (?,?,?,?,?,?,?,?)");
-$upd  = $db->prepare("UPDATE parts SET nama=?, kategori=?, harga_beli=?, harga_jual=?, stok=?, stok_min=?, barcode=? WHERE kode=?");
+$ins  = $db->prepare("INSERT INTO parts (kode, nama, kategori, harga_beli, harga_jual, stok, stok_min, barcode, lokasi_rak) VALUES (?,?,?,?,?,?,?,?,?)");
+$upd  = $db->prepare("UPDATE parts SET nama=?, kategori=?, harga_beli=?, harga_jual=?, stok=?, stok_min=?, barcode=?, lokasi_rak=? WHERE kode=?");
 $insCat = $db->prepare("INSERT IGNORE INTO categories (nama) VALUES (?)");
 
 try {
@@ -85,7 +86,7 @@ try {
     foreach ($normalized as $n) {
         if ($n['status'] === 'invalid' || $n['status'] === 'skip') continue;
         if ($n['kategori'] !== '') $insCat->execute([$n['kategori']]);
-        $vals = [$n['nama'], $n['kategori'], $n['harga_beli'], $n['harga_jual'], $n['stok'], $n['stok_min'], $n['barcode']];
+        $vals = [$n['nama'], $n['kategori'], $n['harga_beli'], $n['harga_jual'], $n['stok'], $n['stok_min'], $n['barcode'], $n['lokasi_rak']];
         if ($n['status'] === 'update') {
             $upd->execute([...$vals, $n['kode']]);
         } elseif ($n['status'] === 'new') {

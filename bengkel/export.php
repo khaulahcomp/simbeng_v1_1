@@ -59,11 +59,12 @@ if ($type === 'parts') {
         $rows = $st->fetchAll(PDO::FETCH_ASSOC);
         $fname = 'daftar_sparepart_' . date('Ymd');
     }
-    $headers = ['No','Kode','Barcode','Nama Barang','Kategori','Harga Beli','Harga Jual','Stok','Stok Min','Status'];
+    $headers = ['No','Kode','Barcode','Nama Barang','Kategori','Rak','Harga Beli','Harga Jual','Stok','Stok Min','Status'];
     $data = [];
     $no = 1;
     foreach ($rows as $r) {
         $data[] = [$no++, $r['kode'], $r['barcode'], $r['nama'], $r['kategori'],
+                   $r['lokasi_rak'] ?? '',
                    rupiah($r['harga_beli']), rupiah($r['harga_jual']), $r['stok'], $r['stok_min'],
                    $r['stok'] <= $r['stok_min'] ? 'MENIPIS' : 'Aman'];
     }

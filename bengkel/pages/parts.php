@@ -21,15 +21,16 @@ if ($action === 'save') {
         (float)($_POST['harga_jual'] ?? 0),
         (int)($_POST['stok'] ?? 0),
         (int)($_POST['stok_min'] ?? 5),
+        trim($_POST['lokasi_rak'] ?? ''),
     ];
     if ($kode !== '' && $data[2] !== '') {
         try {
             if ($id) {
-                $db->prepare("UPDATE parts SET kode=?, barcode=?, nama=?, kategori=?, harga_beli=?, harga_jual=?, stok=?, stok_min=? WHERE id=?")
+                $db->prepare("UPDATE parts SET kode=?, barcode=?, nama=?, kategori=?, harga_beli=?, harga_jual=?, stok=?, stok_min=?, lokasi_rak=? WHERE id=?")
                    ->execute([...$data, $id]);
                 set_flash('success', 'Data sparepart diperbarui.');
             } else {
-                $db->prepare("INSERT INTO parts (kode, barcode, nama, kategori, harga_beli, harga_jual, stok, stok_min) VALUES (?,?,?,?,?,?,?,?)")
+                $db->prepare("INSERT INTO parts (kode, barcode, nama, kategori, harga_beli, harga_jual, stok, stok_min, lokasi_rak) VALUES (?,?,?,?,?,?,?,?,?)")
                    ->execute($data);
                 set_flash('success', 'Sparepart baru ditambahkan.');
             }
@@ -49,7 +50,7 @@ $q = trim($_GET['q'] ?? '');
 $filter = $_GET['filter'] ?? '';
 $sql = "SELECT * FROM parts";
 $where = []; $params = [];
-if ($q !== '') { $where[] = "(nama LIKE ? OR kode LIKE ? OR barcode LIKE ?)"; $params = ["%$q%", "%$q%", "%$q%"]; }
+if ($q !== '') { $where[] = "(nama LIKE ? OR kode LIKE ? OR barcode LIKE ? OR lokasi_rak LIKE ?)"; $params = ["%$q%", "%$q%", "%$q%", "%$q%"]; }
 if ($filter === 'low') { $where[] = "stok <= stok_min"; }
 $whereSql = $where ? (" WHERE " . implode(' AND ', $where)) : '';
 
@@ -147,6 +148,16 @@ $import_logs = $db->query("SELECT * FROM import_logs ORDER BY id DESC LIMIT 20")
             <input name="stok" type="number" min="0" class="form-control form-control-sm" value="<?= esc($edit['stok'] ?? 0) ?>" data-testid="part-stok"></div>
           <div class="col-6 mb-3"><label class="form-label small">Stok Minimum (alert)</label>
             <input name="stok_min" type="number" min="0" class="form-control form-control-sm" value="<?= esc($edit['stok_min'] ?? 5) ?>" data-testid="part-stok-min"></div>
+          <div class="col-12 mb-3">
+            <label class="form-label small">
+              <i class="bi bi-geo-alt me-1"></i>Letak / Nomor Rak
+              <span class="text-muted" style="font-size:11px">— mempermudah pencarian di gudang</span>
+            </label>
+            <input name="lokasi_rak" class="form-control form-control-sm"
+                   placeholder="mis. R-01, A2-B3, Rak Oli Bawah..."
+                   value="<?= esc($edit['lokasi_rak'] ?? '') ?>"
+                   data-testid="part-lokasi-rak">
+          </div>
         </div>
         <button class="btn btn-sm btn-primary w-100" data-testid="part-submit"><?= $edit ? 'Simpan Perubahan' : 'Tambah Sparepart' ?></button>
         <?php if ($edit): ?><a href="index.php?page=parts" class="btn btn-sm btn-outline-secondary w-100 mt-2">Batal</a><?php endif; ?>
@@ -156,7 +167,7 @@ $import_logs = $db->query("SELECT * FROM import_logs ORDER BY id DESC LIMIT 20")
     <div class="card table-card mt-3"><div class="card-body">
       <h2 class="h6">Import Excel / CSV</h2>
       <p class="small text-muted mb-2">
-        Format kolom: <code>kode, nama, kategori, harga_beli, harga_jual, stok, stok_min, barcode</code>.
+        Format kolom: <code>kode, nama, kategori, harga_beli, harga_jual, stok, stok_min, barcode, lokasi_rak</code>.
       </p>
       <div class="mb-2">
         <label class="form-label small mb-1">Mode Import</label>
@@ -261,7 +272,7 @@ $import_logs = $db->query("SELECT * FROM import_logs ORDER BY id DESC LIMIT 20")
       </div>
       <form class="d-flex mb-3 flex-wrap gap-2" method="get">
         <input type="hidden" name="page" value="parts">
-        <input name="q" class="form-control form-control-sm" style="max-width:280px" placeholder="Cari nama / kode / barcode..." value="<?= esc($q) ?>" data-testid="part-search">
+        <input name="q" class="form-control form-control-sm" style="max-width:280px" placeholder="Cari nama / kode / barcode / rak..." value="<?= esc($q) ?>" data-testid="part-search">
         <button class="btn btn-sm btn-outline-primary" data-testid="part-search-btn"><i class="bi bi-search"></i></button>
         <a href="index.php?page=parts&filter=low" class="btn btn-sm btn-outline-danger text-nowrap" data-testid="part-low-filter"><i class="bi bi-exclamation-triangle me-1"></i>Stok Menipis</a>
         <div class="ms-auto d-flex align-items-center gap-1">
@@ -275,14 +286,21 @@ $import_logs = $db->query("SELECT * FROM import_logs ORDER BY id DESC LIMIT 20")
       </form>
       <div class="table-responsive">
       <table class="table table-sm align-middle" data-testid="parts-table">
-        <thead><tr><th>Kode</th><th>Nama</th><th>Kategori</th><th class="text-end">H. Beli</th><th class="text-end">H. Jual</th><th class="text-end">Stok</th><th class="text-end">Aksi</th></tr></thead>
+        <thead><tr><th>Kode</th><th>Nama</th><th>Kategori</th><th>Rak</th><th class="text-end">H. Beli</th><th class="text-end">H. Jual</th><th class="text-end">Stok</th><th class="text-end">Aksi</th></tr></thead>
         <tbody>
-        <?php if (!$rows): ?><tr><td colspan="7" class="text-center text-muted">Belum ada data sparepart.</td></tr><?php endif; ?>
+        <?php if (!$rows): ?><tr><td colspan="8" class="text-center text-muted">Belum ada data sparepart.</td></tr><?php endif; ?>
         <?php foreach ($rows as $r): $low = $r['stok'] <= $r['stok_min']; ?>
           <tr class="<?= $low ? 'table-danger' : '' ?>">
             <td><?= esc($r['kode']) ?></td>
             <td><?= esc($r['nama']) ?><?php if ($r['barcode']): ?> <i class="bi bi-upc text-muted" title="<?= esc($r['barcode']) ?>"></i><?php endif; ?></td>
             <td><?= esc($r['kategori']) ?></td>
+            <td data-testid="part-rak-<?= $r['id'] ?>">
+              <?php if (!empty($r['lokasi_rak'])): ?>
+                <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle"><i class="bi bi-geo-alt me-1"></i><?= esc($r['lokasi_rak']) ?></span>
+              <?php else: ?>
+                <span class="text-muted small">-</span>
+              <?php endif; ?>
+            </td>
             <td class="text-end"><?= rupiah($r['harga_beli']) ?></td>
             <td class="text-end"><?= rupiah($r['harga_jual']) ?></td>
             <td class="text-end"><span class="badge bg-<?= $low ? 'danger' : 'success' ?>" data-testid="part-stok-badge-<?= $r['id'] ?>"><?= $r['stok'] ?></span></td>
@@ -487,20 +505,17 @@ document.querySelectorAll('input[name="importMode"]').forEach(function (r) {
 
 function downloadTemplate(mode) {
   mode = mode || 'baru';
-  const header = "kode,nama,kategori,harga_beli,harga_jual,stok,stok_min,barcode";
+  const header = "kode,nama,kategori,harga_beli,harga_jual,stok,stok_min,barcode,lokasi_rak";
   let content, filename;
   if (mode === 'upgrade') {
-    // Format lama/upgrade: baris contoh menyertakan kode yang mungkin sudah ada
-    // untuk memperbarui datanya, plus baris baru untuk ditambahkan.
     content = header + "\n"
-      + "OLI-MPX,Oli MPX 0.8L (update),Oli,36000,48000,25,5,899123456001\n"
-      + "KMP-BARU,Kampas Rem Baru,Kampas Rem,45000,65000,10,5,899123456999\n";
+      + "OLI-MPX,Oli MPX 0.8L (update),Oli,36000,48000,25,5,899123456001,R-01\n"
+      + "KMP-BARU,Kampas Rem Baru,Kampas Rem,45000,65000,10,5,899123456999,R-05\n";
     filename = 'template_sparepart_upgrade.csv';
   } else {
-    // Format baru: fokus menambah sparepart baru saja.
     content = header + "\n"
-      + "OLI-MPX,Oli MPX 0.8L,Oli,35000,45000,10,5,899123456001\n"
-      + "BSI-01,Busi Standar NGK,Busi,15000,25000,20,5,899123456002\n";
+      + "OLI-MPX,Oli MPX 0.8L,Oli,35000,45000,10,5,899123456001,R-01\n"
+      + "BSI-01,Busi Standar NGK,Busi,15000,25000,20,5,899123456002,R-02\n";
     filename = 'template_sparepart_baru.csv';
   }
   const a = document.createElement('a');
