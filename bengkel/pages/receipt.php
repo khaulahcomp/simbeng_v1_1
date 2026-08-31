@@ -1,0 +1,131 @@
+<?php
+// Struk nota sederhana (tampilan cetak, tanpa sidebar)
+$db = db();
+$id = (int)($_GET['id'] ?? 0);
+$t = $db->prepare("SELECT t.*, c.nama AS customer_nama, c.telepon, v.merek, v.model, v.plat_nomor
+    FROM transactions t JOIN customers c ON c.id=t.customer_id LEFT JOIN vehicles v ON v.id=t.vehicle_id WHERE t.id=?");
+$t->execute([$id]);
+$t = $t->fetch(PDO::FETCH_ASSOC);
+if (!$t) { echo '<p style="font-family:sans-serif">Transaksi tidak ditemukan. <a href="index.php">Kembali</a></p>'; return; }
+$items = $db->prepare("SELECT * FROM transaction_items WHERE transaction_id=?");
+$items->execute([$id]);
+$items = $items->fetchAll(PDO::FETCH_ASSOC);
+
+// ---- Siapkan pesan WhatsApp (klik-kirim via wa.me) untuk notifikasi pelanggan ----
+// Normalisasi nomor HP ke format internasional tanpa tanda + (mis. 62812xxxx)
+$wa_number = preg_replace('/\D+/', '', (string)($t['telepon'] ?? ''));
+if ($wa_number !== '') {
+    if (strncmp($wa_number, '0', 1) === 0)        $wa_number = '62' . substr($wa_number, 1);
+    elseif (strncmp($wa_number, '62', 2) !== 0)   $wa_number = '62' . $wa_number;
+}
+// Rangkai info garansi per item (bila ada)
+$garansi_lines = [];
+foreach ($items as $it) {
+    if ((int)$it['garansi_hari'] > 0) {
+        $exp = date('d/m/Y', strtotime(lokal($t['created_at'], 'Y-m-d') . " +{$it['garansi_hari']} days"));
+        $garansi_lines[] = "- {$it['nama']}: {$it['garansi_hari']} hari (s.d. $exp)";
+    }
+}
+$nama_bengkel = strtoupper(setting('nama_bengkel', 'BENGKEL MOTOR'));
+$wa_lines = [];
+$wa_lines[] = "*$nama_bengkel*";
+$wa_lines[] = "Terima kasih {$t['customer_nama']} atas kepercayaan Anda. Servis kendaraan Anda telah selesai. 🙏";
+$wa_lines[] = "";
+$wa_lines[] = "No. Nota : {$t['no_nota']}";
+$wa_lines[] = "Tanggal  : " . lokal($t['created_at']) . " WIB";
+$wa_lines[] = "Total    : " . rupiah($t['grand_total']);
+if ($garansi_lines) {
+    $wa_lines[] = "";
+    $wa_lines[] = "Info Garansi:";
+    $wa_lines = array_merge($wa_lines, $garansi_lines);
+}
+$wa_lines[] = "";
+$wa_lines[] = "Simpan pesan/nota ini sebagai bukti garansi. Sampai jumpa kembali 🙏";
+$wa_text = implode("\n", $wa_lines);
+$wa_url  = 'https://wa.me/' . $wa_number . '?text=' . rawurlencode($wa_text);
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Nota <?= esc($t['no_nota']) ?></title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<style>
+  body { background: #eee; font-family: monospace; }
+  .nota { max-width: 380px; margin: 20px auto; background: #fff; padding: 20px; }
+  .nota table { width: 100%; font-size: 13px; }
+  .garansi-info { font-size: 11px; color: #444; }
+  @media print { .no-print { display: none; } body { background: #fff; } .nota { margin: 0; } }
+</style>
+</head>
+<body>
+<div class="nota" data-testid="receipt">
+  <div class="text-center">
+    <?php $logo = setting('logo'); if ($logo && is_file(__DIR__ . '/../' . $logo)): ?>
+    <img src="<?= esc($logo) ?>" alt="Logo" style="max-height:56px;margin-bottom:6px" data-testid="receipt-logo"><br>
+    <?php endif; ?>
+    <strong style="font-size:16px"><?= esc(strtoupper(setting('nama_bengkel', 'BENGKEL MOTOR'))) ?></strong><br>
+    <?php if (setting('alamat')): ?><span style="font-size:12px"><?= esc(setting('alamat')) ?><?= setting('telepon') ? ' - Telp ' . esc(setting('telepon')) : '' ?></span><br><?php endif; ?>
+    <?php if (setting('nib')): ?><span style="font-size:11px">NIB: <?= esc(setting('nib')) ?></span><br><?php endif; ?>
+    <?php if (setting('pemilik')): ?><span style="font-size:11px">Pemilik: <?= esc(setting('pemilik')) ?></span><br><?php endif; ?>
+    <hr>
+  </div>
+  <table>
+    <tr><td>Nota</td><td>: <?= esc($t['no_nota']) ?></td></tr>
+    <tr><td>Tanggal</td><td>: <?= esc(lokal($t['created_at'])) ?> WIB</td></tr>
+    <tr><td>Waktu Cetak</td><td>: <span id="waktuCetak" data-testid="waktu-cetak"></span></td></tr>
+    <tr><td>Pelanggan</td><td>: <?= esc($t['customer_nama']) ?></td></tr>
+    <?php if ($t['plat_nomor']): ?>
+    <tr><td>Kendaraan</td><td>: <?= esc($t['merek'] . ' ' . $t['model'] . ' / ' . $t['plat_nomor']) ?></td></tr>
+    <?php endif; ?>
+  </table>
+  <hr>
+  <table>
+    <?php foreach ($items as $it): ?>
+    <tr>
+      <td><?= esc($it['nama']) ?><?= $it['tipe']==='part' ? " x{$it['qty']}" : '' ?>
+        <?php if ($it['garansi_hari'] > 0): ?>
+        <div class="garansi-info">Garansi <?= $it['garansi_hari'] ?> hari s.d. <?= date('d/m/Y', strtotime(lokal($t['created_at'], 'Y-m-d') . " +{$it['garansi_hari']} days")) ?></div>
+        <?php endif; ?>
+      </td>
+      <td class="text-end"><?= number_format($it['subtotal'], 0, ',', '.') ?></td>
+    </tr>
+    <?php endforeach; ?>
+  </table>
+  <hr>
+  <table>
+    <tr><td>Jasa</td><td class="text-end"><?= number_format($t['total_jasa'], 0, ',', '.') ?></td></tr>
+    <tr><td>Sparepart</td><td class="text-end"><?= number_format($t['total_part'], 0, ',', '.') ?></td></tr>
+    <?php if ((float)($t['diskon'] ?? 0) > 0): ?>
+    <tr><td>Diskon</td><td class="text-end">-<?= number_format($t['diskon'], 0, ',', '.') ?></td></tr>
+    <?php endif; ?>
+    <tr><td><strong>TOTAL</strong></td><td class="text-end"><strong><?= rupiah($t['grand_total']) ?></strong></td></tr>
+  </table>
+  <hr>
+  <p class="text-center mb-0" style="font-size:12px">Terima kasih atas kepercayaan Anda.<br>Simpan nota ini sebagai bukti garansi.</p>
+  <div class="text-center mt-3 no-print">
+    <button onclick="window.print()" class="btn btn-primary btn-sm" data-testid="print-btn"><i class="bi bi-printer"></i> Cetak</button>
+    <?php if ($wa_number !== ''): ?>
+    <a href="<?= esc($wa_url) ?>" target="_blank" rel="noopener" class="btn btn-success btn-sm" data-testid="wa-btn"><i class="bi bi-whatsapp"></i> Kirim WhatsApp</a>
+    <?php else: ?>
+    <button class="btn btn-success btn-sm" disabled title="Nomor HP pelanggan belum diisi. Lengkapi di menu Pelanggan." data-testid="wa-btn-disabled"><i class="bi bi-whatsapp"></i> Kirim WhatsApp</button>
+    <?php endif; ?>
+    <a href="index.php?page=pos" class="btn btn-outline-secondary btn-sm" data-testid="new-trx-btn">Transaksi Baru</a>
+    <a href="index.php" class="btn btn-outline-secondary btn-sm">Dashboard</a>
+  </div>
+  <?php if ($wa_number === ''): ?>
+  <p class="text-center text-muted no-print mt-2" style="font-size:11px">Nomor HP pelanggan belum tersimpan, tombol WhatsApp non-aktif.</p>
+  <?php endif; ?>
+</div>
+<script>
+// Waktu cetak realtime mengikuti jam perangkat pengguna
+function tickWaktu() {
+  const el = document.getElementById('waktuCetak');
+  if (el) el.textContent = new Date().toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+tickWaktu();
+setInterval(tickWaktu, 1000);
+</script>
+</body>
+</html>
