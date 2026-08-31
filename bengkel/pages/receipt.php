@@ -34,6 +34,7 @@ $wa_lines[] = "";
 $wa_lines[] = "No. Nota : {$t['no_nota']}";
 $wa_lines[] = "Tanggal  : " . lokal($t['created_at']) . " WIB";
 $wa_lines[] = "Total    : " . rupiah($t['grand_total']);
+$wa_lines[] = "Bayar    : " . (strtolower($t['metode_bayar'] ?? 'cash') === 'transfer' ? 'Transfer' : 'Cash');
 if ($garansi_lines) {
     $wa_lines[] = "";
     $wa_lines[] = "Info Garansi:";
@@ -101,6 +102,25 @@ $wa_url  = 'https://wa.me/' . $wa_number . '?text=' . rawurlencode($wa_text);
     <tr><td>Diskon</td><td class="text-end">-<?= number_format($t['diskon'], 0, ',', '.') ?></td></tr>
     <?php endif; ?>
     <tr><td><strong>TOTAL</strong></td><td class="text-end"><strong><?= rupiah($t['grand_total']) ?></strong></td></tr>
+  </table>
+  <?php
+    // Pilihan metode pembayaran (ceklis di nota).
+    $metode = strtolower($t['metode_bayar'] ?? 'cash');
+    $ck_cash = $metode === 'cash' ? '&#9746;' : '&#9744;';       // ☑ / ☐
+    $ck_trf  = $metode === 'transfer' ? '&#9746;' : '&#9744;';
+  ?>
+  <table data-testid="receipt-metode-bayar" class="mt-1" style="border-top:1px dashed #999;padding-top:4px">
+    <tr>
+      <td colspan="2" style="font-size:12px">Metode Pembayaran:</td>
+    </tr>
+    <tr>
+      <td style="font-size:13px" data-testid="receipt-metode-cash">
+        <span style="font-family:monospace;font-size:15px"><?= $ck_cash ?></span> Cash
+      </td>
+      <td style="font-size:13px" data-testid="receipt-metode-transfer">
+        <span style="font-family:monospace;font-size:15px"><?= $ck_trf ?></span> Transfer
+      </td>
+    </tr>
   </table>
   <hr>
   <p class="text-center mb-0" style="font-size:12px">Terima kasih atas kepercayaan Anda.<br>Simpan nota ini sebagai bukti garansi.</p>

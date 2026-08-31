@@ -132,12 +132,19 @@ function init_db(): void {
         diskon DECIMAL(14,2) NOT NULL DEFAULT 0,
         grand_total DECIMAL(14,2) NOT NULL DEFAULT 0,
         status VARCHAR(20) NOT NULL DEFAULT 'selesai',
+        metode_bayar VARCHAR(20) NOT NULL DEFAULT 'cash',
         catatan VARCHAR(500) NOT NULL DEFAULT '',
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         INDEX (customer_id), INDEX (vehicle_id),
         CONSTRAINT fk_trx_customer FOREIGN KEY (customer_id) REFERENCES customers(id),
         CONSTRAINT fk_trx_vehicle FOREIGN KEY (vehicle_id) REFERENCES vehicles(id)
     ) $eng");
+    // Migrasi: tambah kolom metode_bayar untuk DB lama yang belum punya kolom ini.
+    $hasBayar = $db->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+                            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME='transactions' AND COLUMN_NAME='metode_bayar'")->fetchColumn();
+    if (!$hasBayar) {
+        $db->exec("ALTER TABLE transactions ADD COLUMN metode_bayar VARCHAR(20) NOT NULL DEFAULT 'cash' AFTER status");
+    }
 
     $db->exec("CREATE TABLE IF NOT EXISTS transaction_items (
         id INT AUTO_INCREMENT PRIMARY KEY,

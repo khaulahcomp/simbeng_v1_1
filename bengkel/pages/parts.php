@@ -230,10 +230,34 @@ $import_logs = $db->query("SELECT * FROM import_logs ORDER BY id DESC LIMIT 20")
 
   <div class="col-lg-8">
     <div class="card table-card"><div class="card-body">
-      <div class="d-flex justify-content-end gap-1 mb-2" data-testid="parts-export-buttons">
-        <a class="btn btn-sm btn-outline-danger" target="_blank" href="export.php?type=parts&format=pdf" data-testid="parts-export-pdf"><i class="bi bi-file-earmark-pdf me-1"></i>PDF</a>
-        <a class="btn btn-sm btn-outline-success" href="export.php?type=parts&format=xls" data-testid="parts-export-xls"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a>
-        <a class="btn btn-sm btn-outline-primary" href="export.php?type=parts&format=doc" data-testid="parts-export-doc"><i class="bi bi-file-earmark-word me-1"></i>Word</a>
+      <div class="d-flex justify-content-end gap-1 mb-2 flex-wrap" data-testid="parts-export-buttons">
+        <?php
+          // Query string untuk ekspor mengikuti filter & halaman aktif.
+          $exp_qs_page = http_build_query(array_filter([
+              'type' => 'parts', 'scope' => 'page',
+              'q' => $q, 'filter' => $filter, 'p' => $cur_page, 'per_page' => $per_page,
+          ], fn ($v) => $v !== '' && $v !== null));
+          $exp_qs_all  = http_build_query(array_filter([
+              'type' => 'parts', 'scope' => 'all',
+              'q' => $q, 'filter' => $filter,
+          ], fn ($v) => $v !== '' && $v !== null));
+        ?>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Ekspor halaman aktif" data-testid="parts-export-page-group">
+          <span class="btn btn-sm btn-outline-secondary disabled" style="pointer-events:none">
+            <i class="bi bi-file-earmark-arrow-down me-1"></i>Ekspor Halaman
+          </span>
+          <a class="btn btn-outline-danger" target="_blank" href="export.php?<?= esc($exp_qs_page) ?>&format=pdf" data-testid="parts-export-page-pdf" title="PDF halaman <?= $cur_page ?>"><i class="bi bi-file-earmark-pdf"></i></a>
+          <a class="btn btn-outline-success" href="export.php?<?= esc($exp_qs_page) ?>&format=xls" data-testid="parts-export-page-xls" title="Excel halaman <?= $cur_page ?>"><i class="bi bi-file-earmark-excel"></i></a>
+          <a class="btn btn-outline-primary" href="export.php?<?= esc($exp_qs_page) ?>&format=doc" data-testid="parts-export-page-doc" title="Word halaman <?= $cur_page ?>"><i class="bi bi-file-earmark-word"></i></a>
+        </div>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Ekspor semua" data-testid="parts-export-all-group">
+          <span class="btn btn-sm btn-outline-secondary disabled" style="pointer-events:none">
+            <i class="bi bi-collection me-1"></i>Ekspor Semua
+          </span>
+          <a class="btn btn-outline-danger" target="_blank" href="export.php?<?= esc($exp_qs_all) ?>&format=pdf" data-testid="parts-export-pdf"><i class="bi bi-file-earmark-pdf"></i></a>
+          <a class="btn btn-outline-success" href="export.php?<?= esc($exp_qs_all) ?>&format=xls" data-testid="parts-export-xls"><i class="bi bi-file-earmark-excel"></i></a>
+          <a class="btn btn-outline-primary" href="export.php?<?= esc($exp_qs_all) ?>&format=doc" data-testid="parts-export-doc"><i class="bi bi-file-earmark-word"></i></a>
+        </div>
       </div>
       <form class="d-flex mb-3 flex-wrap gap-2" method="get">
         <input type="hidden" name="page" value="parts">

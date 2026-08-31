@@ -69,6 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_
     if ($diskon_jenis === 'nominal') $diskon = min(max($diskon_nilai, 0), $subtotal);
     elseif ($diskon_jenis === 'persen') $diskon = $subtotal * min(max($diskon_nilai, 0), 100) / 100;
     $grand = $subtotal - $diskon;
+    $metode_bayar = ($_POST['metode_bayar'] ?? 'cash') === 'transfer' ? 'transfer' : 'cash';
 
     // Simpan transaksi + sesuaikan stok dalam satu transaksi database
     $db->beginTransaction();
@@ -86,13 +87,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_
             }
             $db->prepare("DELETE FROM stock_movements WHERE ref_type='penjualan' AND ref_id=?")->execute([$edit_id]);
             $db->prepare("DELETE FROM transaction_items WHERE transaction_id=?")->execute([$edit_id]);
-            $db->prepare("UPDATE transactions SET customer_id=?, vehicle_id=?, total_jasa=?, total_part=?, diskon=?, grand_total=? WHERE id=?")
-               ->execute([$customer_id, $vehicle_id, $total_jasa, $total_part, $diskon, $grand, $edit_id]);
+            $db->prepare("UPDATE transactions SET customer_id=?, vehicle_id=?, total_jasa=?, total_part=?, diskon=?, grand_total=?, metode_bayar=? WHERE id=?")
+               ->execute([$customer_id, $vehicle_id, $total_jasa, $total_part, $diskon, $grand, $metode_bayar, $edit_id]);
             $trx_id = $edit_id;
         } else {
             $no_nota = next_kode('TRX', 'transactions', 'no_nota');
-            $db->prepare("INSERT INTO transactions (no_nota, customer_id, vehicle_id, total_jasa, total_part, diskon, grand_total, status) VALUES (?,?,?,?,?,?,?, 'selesai')")
-               ->execute([$no_nota, $customer_id, $vehicle_id, $total_jasa, $total_part, $diskon, $grand]);
+            $db->prepare("INSERT INTO transactions (no_nota, customer_id, vehicle_id, total_jasa, total_part, diskon, grand_total, metode_bayar, status) VALUES (?,?,?,?,?,?,?,?, 'selesai')")
+               ->execute([$no_nota, $customer_id, $vehicle_id, $total_jasa, $total_part, $diskon, $grand, $metode_bayar]);
             $trx_id = (int)$db->lastInsertId();
         }
         $insItem = $db->prepare("INSERT INTO transaction_items (transaction_id, tipe, part_id, nama, qty, harga, subtotal, garansi_hari) VALUES (?,?,?,?,?,?,?,?)");
@@ -174,10 +175,40 @@ $parts = $db->query("SELECT id, kode, barcode, nama, harga_jual, stok FROM parts
   <button type="button" class="btn btn-sm btn-outline-secondary mb-4" onclick="addJasa()" data-testid="add-jasa-btn"><i class="bi bi-plus-lg me-1"></i>Tambah Jasa</button>
 
   <h2 class="h6">Sparepart Digunakan / Dijual</h2>
+  <div class="row g-2 mb-2 align-items-center" data-testid="pos-quickadd-row">
+    <div class="col-md-6 col-lg-5">
+      <div class="input-group input-group-sm">
+        <span class="input-group-text"><i class="bi bi-upc-scan"></i></span>
+        <input id="posQuickAdd" class="form-control" autocomplete="off"
+               placeholder="Ketik/scan Kode Sparepart atau Barcode + Enter"
+               data-testid="pos-quickadd-input">
+        <button type="button" class="btn btn-outline-primary" id="posQuickAddBtn" data-testid="pos-quickadd-btn">
+          <i class="bi bi-plus-lg"></i>
+        </button>
+        <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#scanModal" data-testid="pos-quickadd-scan-btn" title="Scan via kamera">
+          <i class="bi bi-camera"></i>
+        </button>
+      </div>
+      <div id="posQuickAddMsg" class="small text-muted mt-1" data-testid="pos-quickadd-msg"></div>
+    </div>
+    <div class="col-md-6 col-lg-7">
+      <div id="posQuickAddSuggest" class="list-group" style="display:none;max-height:180px;overflow:auto" data-testid="pos-quickadd-suggest"></div>
+    </div>
+  </div>
   <div id="partRows"></div>
   <button type="button" class="btn btn-sm btn-outline-secondary mb-4" onclick="addPart()" data-testid="add-part-btn"><i class="bi bi-plus-lg me-1"></i>Tambah Sparepart</button>
 
-  <div class="row justify-content-end mb-2">
+  <div class="row g-3 mb-2 justify-content-end">
+    <div class="col-md-4">
+      <label class="form-label fw-semibold"><i class="bi bi-wallet2 me-1"></i>Metode Pembayaran</label>
+      <?php $mb = $edit_trx['metode_bayar'] ?? 'cash'; ?>
+      <div class="btn-group w-100" role="group" data-testid="pos-metode-bayar-group">
+        <input type="radio" class="btn-check" name="metode_bayar" id="metodeCash" value="cash" <?= $mb === 'cash' ? 'checked' : '' ?> data-testid="pos-metode-cash">
+        <label class="btn btn-outline-success" for="metodeCash"><i class="bi bi-cash-coin me-1"></i>Cash</label>
+        <input type="radio" class="btn-check" name="metode_bayar" id="metodeTransfer" value="transfer" <?= $mb === 'transfer' ? 'checked' : '' ?> data-testid="pos-metode-transfer">
+        <label class="btn btn-outline-primary" for="metodeTransfer"><i class="bi bi-bank me-1"></i>Transfer</label>
+      </div>
+    </div>
     <div class="col-md-4">
       <label class="form-label fw-semibold"><i class="bi bi-percent me-1"></i>Diskon (opsional)</label>
       <div class="input-group input-group-sm">
@@ -279,13 +310,49 @@ function hitung() {
   document.getElementById('grandTotal').textContent = rupiah(sub - diskon);
 }
 
-// Scanner kamera + input scanner USB (bertindak seperti keyboard)
+// Scanner kamera + input scanner USB (bertindak seperti keyboard).
+// pilihDariScan dipakai baik oleh scanner kamera modal maupun input quickadd.
 let scannerObj = null;
 const scanModal = document.getElementById('scanModal');
+function findPart(text) {
+  const q = (text || '').trim();
+  if (!q) return null;
+  const qU = q.toUpperCase();
+  // 1) Prioritas: match persis pada barcode atau kode.
+  let p = PARTS.find(x => (x.barcode || '') === q || (x.kode || '').toUpperCase() === qU);
+  if (p) return p;
+  // 2) Fallback: match prefix kode (agar pengetikan cepat juga membantu).
+  p = PARTS.find(x => (x.kode || '').toUpperCase().startsWith(qU));
+  return p || null;
+}
 function pilihDariScan(text) {
-  const p = PARTS.find(x => x.barcode === text || x.kode.toUpperCase() === text.toUpperCase());
-  if (p) { addPart(p.id, 1, 0); hitung(); bootstrap.Modal.getInstance(scanModal).hide(); }
-  else alert('Sparepart dengan kode/barcode "' + text + '" tidak ditemukan.');
+  const p = findPart(text);
+  if (p) {
+    // Jika baris sparepart yang sama sudah ada -> tambah qty saja.
+    let added = false;
+    document.querySelectorAll('.part-row').forEach(row => {
+      const sel = row.querySelector('.part-select');
+      if (!added && sel && String(sel.value) === String(p.id)) {
+        const qty = row.querySelector('.part-qty');
+        qty.value = (parseInt(qty.value) || 0) + 1;
+        added = true;
+      }
+    });
+    if (!added) addPart(p.id, 1, 0);
+    hitung();
+    const inst = bootstrap.Modal.getInstance(scanModal);
+    if (inst) inst.hide();
+    showQuickAddMsg('Ditambahkan: ' + p.kode + ' - ' + p.nama, 'text-success');
+    return true;
+  }
+  showQuickAddMsg('Sparepart dengan kode/barcode "' + text + '" tidak ditemukan.', 'text-danger');
+  return false;
+}
+function showQuickAddMsg(t, cls) {
+  const el = document.getElementById('posQuickAddMsg');
+  if (!el) return;
+  el.className = 'small mt-1 ' + (cls || 'text-muted');
+  el.textContent = t;
 }
 scanModal.addEventListener('shown.bs.modal', () => {
   document.getElementById('scanInput').focus();
@@ -296,6 +363,56 @@ scanModal.addEventListener('hidden.bs.modal', () => { if (scannerObj) scannerObj
 document.getElementById('scanInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); pilihDariScan(e.target.value.trim()); e.target.value = ''; }
 });
+
+// Quick-add sparepart via input kode/barcode inline (di atas daftar sparepart).
+(function () {
+  const inp = document.getElementById('posQuickAdd');
+  const btn = document.getElementById('posQuickAddBtn');
+  const box = document.getElementById('posQuickAddSuggest');
+  if (!inp || !btn || !box) return;
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  function renderSuggest(q) {
+    box.innerHTML = ''; box.style.display = 'none';
+    const term = (q || '').trim(); if (term.length < 1) return;
+    const tU = term.toUpperCase();
+    const matches = PARTS.filter(p => (p.kode || '').toUpperCase().includes(tU) || (p.nama || '').toUpperCase().includes(tU) || (p.barcode || '').includes(term)).slice(0, 8);
+    if (!matches.length) return;
+    matches.forEach(p => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'list-group-item list-group-item-action py-1 small';
+      b.setAttribute('data-testid', 'pos-quickadd-suggest-item');
+      b.innerHTML = '<span class="fw-semibold">' + esc(p.kode) + '</span> — ' + esc(p.nama)
+                  + ' <span class="text-muted">(' + rupiah(p.harga_jual) + ', stok ' + p.stok + ')</span>';
+      b.addEventListener('click', () => { pilihDariScan(p.kode); inp.value = ''; box.style.display = 'none'; inp.focus(); });
+      box.appendChild(b);
+    });
+    box.style.display = 'block';
+  }
+
+  inp.addEventListener('input', () => renderSuggest(inp.value));
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = inp.value.trim();
+      if (v && pilihDariScan(v)) { inp.value = ''; box.style.display = 'none'; }
+      inp.focus();
+    } else if (e.key === 'Escape') {
+      box.style.display = 'none';
+    }
+  });
+  btn.addEventListener('click', () => {
+    const v = inp.value.trim();
+    if (!v) { showQuickAddMsg('Ketik kode / barcode dulu.', 'text-warning'); inp.focus(); return; }
+    if (pilihDariScan(v)) { inp.value = ''; box.style.display = 'none'; }
+    inp.focus();
+  });
+  document.addEventListener('click', e => {
+    if (!box.contains(e.target) && e.target !== inp) box.style.display = 'none';
+  });
+})();
 
 <?php if ($edit_trx): ?>
 // Mode edit: isi form dengan item transaksi lama

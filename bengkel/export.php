@@ -20,10 +20,46 @@ if (!in_array($format, ['xls', 'doc', 'pdf'], true)) $format = 'pdf';
 
 // ---- Siapkan data sesuai jenis laporan ----
 if ($type === 'parts') {
-    $judul = 'Daftar Sparepart';
-    $subjudul = 'Dicetak: ' . date('d/m/Y H:i');
+    // scope=page -> hanya baris yang sedang tampil pada halaman aktif menu
+    // Sparepart (mengikuti filter pencarian & Stok Menipis + pagination).
+    // scope=all (default) -> seluruh sparepart.
+    $scope   = ($_GET['scope'] ?? 'all') === 'page' ? 'page' : 'all';
+    $q       = trim($_GET['q'] ?? '');
+    $filter  = $_GET['filter'] ?? '';
+    $where   = []; $params = [];
+    if ($q !== '') { $where[] = "(nama LIKE ? OR kode LIKE ? OR barcode LIKE ?)"; $params = ["%$q%", "%$q%", "%$q%"]; }
+    if ($filter === 'low') $where[] = "stok <= stok_min";
+
+    if ($scope === 'page') {
+        $per_page_opts = [25, 50, 100, 200];
+        $per_page = (int)($_GET['per_page'] ?? 50);
+        if (!in_array($per_page, $per_page_opts, true)) $per_page = 50;
+        $countStmt = db()->prepare("SELECT COUNT(*) FROM parts" . ($where ? (' WHERE ' . implode(' AND ', $where)) : ''));
+        $countStmt->execute($params);
+        $total_rows = (int)$countStmt->fetchColumn();
+        $total_pages = max(1, (int)ceil($total_rows / $per_page));
+        $p = max(1, (int)($_GET['p'] ?? 1)); if ($p > $total_pages) $p = $total_pages;
+        $offset = ($p - 1) * $per_page;
+        $sql = "SELECT * FROM parts" . ($where ? (' WHERE ' . implode(' AND ', $where)) : '')
+             . " ORDER BY id DESC LIMIT $per_page OFFSET $offset";
+        $st = db()->prepare($sql); $st->execute($params);
+        $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+        $judul = 'Daftar Sparepart (Halaman ' . $p . '/' . $total_pages . ')';
+        $filterLine = [];
+        if ($q !== '')       $filterLine[] = 'Pencarian: "' . $q . '"';
+        if ($filter === 'low') $filterLine[] = 'Stok Menipis';
+        $subjudul = ($filterLine ? implode(' · ', $filterLine) . ' · ' : '')
+                  . count($rows) . ' baris (dari ' . $total_rows . ') · Dicetak: ' . date('d/m/Y H:i');
+        $fname = 'daftar_sparepart_hlm' . $p . '_' . date('Ymd');
+    } else {
+        $judul = 'Daftar Sparepart';
+        $subjudul = 'Dicetak: ' . date('d/m/Y H:i');
+        $sql = "SELECT * FROM parts" . ($where ? (' WHERE ' . implode(' AND ', $where)) : '') . " ORDER BY kategori, nama";
+        $st = db()->prepare($sql); $st->execute($params);
+        $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+        $fname = 'daftar_sparepart_' . date('Ymd');
+    }
     $headers = ['No','Kode','Barcode','Nama Barang','Kategori','Harga Beli','Harga Jual','Stok','Stok Min','Status'];
-    $rows = db()->query("SELECT * FROM parts ORDER BY kategori, nama")->fetchAll(PDO::FETCH_ASSOC);
     $data = [];
     $no = 1;
     foreach ($rows as $r) {
@@ -32,7 +68,6 @@ if ($type === 'parts') {
                    $r['stok'] <= $r['stok_min'] ? 'MENIPIS' : 'Aman'];
     }
     $footer = null;
-    $fname = 'daftar_sparepart_' . date('Ymd');
 } elseif ($type === 'stock') {
     // ---- Laporan pergerakan stok: masuk / keluar / penjualan / garansi ----
     $jenis = $_GET['jenis'] ?? 'semua';
