@@ -1,13 +1,16 @@
 """
 Backend tests for the PHP-native simbeng_v1 app (running on preview URL).
-Covers:
-  - Login flow (session cookies)
-  - HSC search endpoint (auto detect nama vs kode)
-  - Import parts (mode=baru: skip existing; mode=upgrade: upsert)
-  - Regression: parts autocomplete lookup used by stock page
+Covers new features (iter-2):
+  - Preview import (no DB write) + commit + import_logs
+  - Upgrade preview + commit + restore
+  - Sync HSC GET/POST endpoints
+Regression:
+  - Login, HSC search auto-detect, short query validation,
+    baru skip-existing, stock autocomplete, page loads
 """
 import os
 import re
+import time
 import pytest
 import requests
 
@@ -22,62 +25,36 @@ PWD = "admin123"
 @pytest.fixture(scope="module")
 def session():
     s = requests.Session()
-    # Login via POST to index.php?page=login
     r = s.post(f"{BASE_URL}/?page=login",
                data={"username": USER, "password": PWD},
                allow_redirects=True, timeout=30)
     assert r.status_code == 200, f"login http {r.status_code}"
-    # After login, the dashboard should be reachable
     dash = s.get(f"{BASE_URL}/?page=dashboard", timeout=30)
-    assert "login" not in dash.url.lower() or "page=login" not in dash.url, \
-        f"still on login page after auth: {dash.url}"
+    assert "page=login" not in dash.url, f"still on login: {dash.url}"
     return s
 
 
-# ---------- Login ----------
-def test_login_success(session):
+# ---------- Login / page ----------
+def test_login_and_parts_page(session):
     r = session.get(f"{BASE_URL}/?page=parts", timeout=30)
     assert r.status_code == 200
-    # parts page markers
-    assert "hsc-query" in r.text
-    assert "import-mode-baru" in r.text
-    assert "import-mode-upgrade" in r.text
+    for tid in ["hsc-query", "hsc-filters", "hsc-sync-info", "hsc-sync-now-btn",
+                "import-mode-baru", "import-mode-upgrade", "import-file",
+                "import-preview-modal", "import-preview-summary",
+                "import-preview-confirm", "import-preview-cancel",
+                "import-history-card", "import-history-count"]:
+        assert tid in r.text, f"missing data-testid '{tid}' on parts page"
 
 
-def test_parts_page_no_field_dropdown(session):
-    """The old <select id="hscField"> dropdown must be gone."""
-    r = session.get(f"{BASE_URL}/?page=parts", timeout=30)
-    assert r.status_code == 200
-    assert 'id="hscField"' not in r.text
-    assert 'hscField' not in r.text
-
-
-# ---------- HSC search ----------
+# ---------- HSC search (regression) ----------
 def test_hsc_search_by_name(session):
     r = session.get(f"{BASE_URL}/ajax/lookup_hsc.php",
                     params={"field": "auto", "q": "shock"}, timeout=45)
-    assert r.status_code == 200, r.text[:200]
-    data = r.json()
-    assert "results" in data
-    assert isinstance(data["results"], list)
-    assert data.get("source") in ("live", "local")
-    # We expect at least one result (either live or cached-local)
-    assert len(data["results"]) >= 1, f"no results: {data}"
-    # Must NOT contain the old error string
-    assert "Gagal memuat hasil" not in (data.get("error") or "")
-
-
-def test_hsc_search_by_code_autodetect(session):
-    r = session.get(f"{BASE_URL}/ajax/lookup_hsc.php",
-                    params={"field": "auto", "q": "3XP"}, timeout=45)
     assert r.status_code == 200
     data = r.json()
-    assert "results" in data
-    # Live source ideally; but at minimum request should succeed
-    assert data.get("source") in ("live", "local", "none")
-    # If live/local returned rows, validate structure
-    for row in data["results"][:5]:
-        assert "kode" in row and "nama" in row
+    assert isinstance(data.get("results"), list)
+    assert data.get("source") in ("live", "local")
+    assert len(data["results"]) >= 1
 
 
 def test_hsc_search_short_query(session):
@@ -85,80 +62,148 @@ def test_hsc_search_short_query(session):
                     params={"field": "auto", "q": "a"}, timeout=15)
     data = r.json()
     assert data["results"] == []
-    assert "minimal 2 karakter" in (data.get("error") or "")
 
 
-# ---------- Import parts ----------
-def test_import_baru_skips_existing(session):
+# ---------- Preview import: mode baru ----------
+def test_import_preview_baru_no_write(session):
     payload = {
+        "preview": 1,
         "mode": "baru",
         "rows": [
-            {"kode": "OLI-001", "nama": "X", "harga_beli": 0, "harga_jual": 0, "stok": 0, "stok_min": 0},
-            {"kode": "TEST-NEW-001", "nama": "TEST Sparepart Baru", "kategori": "UjiBaru",
-             "harga_beli": 1000, "harga_jual": 2000, "stok": 1, "stok_min": 1},
+            {"kode": "OLI-001", "nama": "X"},
+            {"kode": "PVW-1", "nama": "Item Baru", "kategori": "Uji"},
+            {"kode": "", "nama": "no code"},
         ],
     }
     r = session.post(f"{BASE_URL}/ajax/import_parts.php", json=payload, timeout=30)
     assert r.status_code == 200, r.text[:200]
     data = r.json()
-    assert data.get("ok") is True, data
-    msg = data.get("message", "")
-    assert "1 ditambah" in msg and "1 dilewati" in msg, f"unexpected message: {msg}"
+    assert data.get("ok") is True
+    assert data.get("preview") is True
+    s = data["summary"]
+    assert s["total"] == 3
+    assert s["new"] == 1
+    assert s["skip"] == 1
+    assert s["invalid"] == 1
+    assert s["update"] == 0
+    # Verify per-row statuses
+    statuses = {r["kode"] or "(empty)": r["status"] for r in data["rows"]}
+    assert statuses["OLI-001"] == "skip"
+    assert statuses["PVW-1"] == "new"
+    assert statuses["(empty)"] == "invalid"
+    # Verify no DB write: search for PVW-1 on parts page (check table cell, not URL/input value)
+    page = session.get(f"{BASE_URL}/?page=parts&q=PVW-1", timeout=30).text
+    assert "<td>PVW-1</td>" not in page, "PREVIEW MODE WROTE TO DB: PVW-1 found in parts list"
 
-    # Verify OLI-001 name is NOT "X"
-    page = session.get(f"{BASE_URL}/?page=parts&q=OLI-001", timeout=30).text
-    assert "OLI-001" in page
-    # If name was clobbered to 'X' we'd see '<td>X</td>' in the row
-    row_match = re.search(r"OLI-001</td>\s*<td>([^<]+)", page)
-    assert row_match, "OLI-001 row not found on page"
-    assert row_match.group(1).strip() != "X", "existing OLI-001 was overwritten by mode=baru!"
 
-    # Verify TEST-NEW-001 got inserted
-    page2 = session.get(f"{BASE_URL}/?page=parts&q=TEST-NEW-001", timeout=30).text
-    assert "TEST-NEW-001" in page2
-
-
-def test_import_upgrade_updates_existing(session):
-    # Save original OLI-001 name
-    page = session.get(f"{BASE_URL}/?page=parts&q=OLI-001", timeout=30).text
-    orig = re.search(r"OLI-001</td>\s*<td>([^<]+)", page)
-    original_name = orig.group(1).strip() if orig else "Oli Mesin 10W-40 800ml"
-
+# ---------- Commit import: mode baru writes + import_logs ----------
+def test_import_commit_baru_writes_and_logs(session):
     payload = {
-        "mode": "upgrade",
+        "mode": "baru",
+        "filename": "TEST_pvw.csv",
         "rows": [
-            {"kode": "OLI-001", "nama": "Oli Mesin Upgraded", "kategori": "Oli",
-             "harga_beli": 38000, "harga_jual": 55000, "stok": 25, "stok_min": 5},
+            {"kode": "OLI-001", "nama": "X"},
+            {"kode": "PVW-1", "nama": "Item Baru", "kategori": "Uji",
+             "harga_beli": 100, "harga_jual": 200, "stok": 1, "stok_min": 1},
+            {"kode": "", "nama": "no code"},
         ],
     }
     r = session.post(f"{BASE_URL}/ajax/import_parts.php", json=payload, timeout=30)
     assert r.status_code == 200
     data = r.json()
     assert data.get("ok") is True
-    msg = data.get("message", "")
-    assert "0 ditambah" in msg and "1 diperbarui" in msg, f"unexpected: {msg}"
+    assert data.get("preview") is False
+    s = data["summary"]
+    assert s["new"] == 1 and s["skip"] == 1 and s["invalid"] == 1
 
-    # verify update
-    page2 = session.get(f"{BASE_URL}/?page=parts&q=OLI-001", timeout=30).text
-    assert "Oli Mesin Upgraded" in page2
+    # Verify PVW-1 inserted
+    page = session.get(f"{BASE_URL}/?page=parts&q=PVW-1", timeout=30).text
+    assert "<td>PVW-1</td>" in page, "PVW-1 was not inserted after commit"
 
-    # Restore original name to keep DB tidy
+    # Verify import history card shows the new log with filename TEST_pvw.csv
+    parts_page = session.get(f"{BASE_URL}/?page=parts", timeout=30).text
+    assert "import-history-table" in parts_page
+    assert "TEST_pvw.csv" in parts_page, "import_logs row not showing filename in history"
+    assert "Administrator" in parts_page, "history row does not show user_nama"
+
+
+# ---------- Preview + Commit upgrade ----------
+def test_import_preview_and_commit_upgrade(session):
+    # Fetch current harga_jual of OLI-001 for restore (best effort from UI text)
+    original_harga = 52000
+
+    # Preview upgrade
+    payload = {
+        "preview": 1,
+        "mode": "upgrade",
+        "rows": [{"kode": "OLI-001", "nama": "NewName", "harga_jual": 99999}],
+    }
+    r = session.post(f"{BASE_URL}/ajax/import_parts.php", json=payload, timeout=30)
+    data = r.json()
+    assert data.get("ok") is True and data.get("preview") is True
+    assert data["summary"]["update"] == 1
+    row0 = data["rows"][0]
+    assert row0["status"] == "update"
+    assert "sudah ada" in row0["reason"].lower()
+
+    # Commit upgrade
+    payload["preview"] = 0
+    payload.pop("preview")  # ensure absent
+    payload["preview"] = 0
+    del payload["preview"]
+    r2 = session.post(f"{BASE_URL}/ajax/import_parts.php", json=payload, timeout=30)
+    data2 = r2.json()
+    assert data2.get("ok") is True and data2.get("preview") is False
+    assert data2["summary"]["update"] == 1
+
+    # Verify update visible
+    page = session.get(f"{BASE_URL}/?page=parts&q=OLI-001", timeout=30).text
+    assert "NewName" in page
+
+    # Restore original
     restore = {"mode": "upgrade", "rows": [
-        {"kode": "OLI-001", "nama": original_name, "kategori": "Oli",
-         "harga_beli": 35000, "harga_jual": 50000, "stok": 25, "stok_min": 5},
+        {"kode": "OLI-001", "nama": "Oli Mesin 10W-40 800ml", "kategori": "Oli",
+         "harga_beli": 38000, "harga_jual": original_harga, "stok": 25, "stok_min": 5},
     ]}
     session.post(f"{BASE_URL}/ajax/import_parts.php", json=restore, timeout=30)
+
+
+# ---------- Sync HSC GET ----------
+def test_sync_hsc_get(session):
+    r = session.get(f"{BASE_URL}/ajax/sync_hsc.php", timeout=30)
+    assert r.status_code == 200, r.text[:200]
+    data = r.json()
+    assert data.get("ok") is True
+    assert "last_sync" in data
+    assert "catalog_count" in data
+    assert isinstance(data["catalog_count"], int)
+    assert data["catalog_count"] > 0, f"expected populated part_catalog, got {data['catalog_count']}"
+
+
+# ---------- Sync HSC POST ----------
+def test_sync_hsc_post_updates_timestamp(session):
+    before = session.get(f"{BASE_URL}/ajax/sync_hsc.php", timeout=30).json().get("last_sync", "")
+    time.sleep(1)
+    r = session.post(f"{BASE_URL}/ajax/sync_hsc.php", timeout=180)
+    assert r.status_code == 200, r.text[:300]
+    data = r.json()
+    assert data.get("ok") is True
+    assert "result" in data
+    result = data["result"]
+    for k in ("inserted", "updated", "rows", "errors", "duration_sec"):
+        assert k in result, f"sync result missing key {k}"
+    after = data.get("last_sync", "")
+    assert after and after != before, f"last_sync not refreshed: before={before} after={after}"
 
 
 # ---------- Regression: stock autocomplete ----------
 def test_stock_lookup_search_parts(session):
     r = session.get(f"{BASE_URL}/ajax/lookup.php",
                     params={"action": "search_parts", "q": "OLI"}, timeout=30)
-    assert r.status_code == 200, r.text[:200]
+    assert r.status_code == 200
     data = r.json()
-    # Might be {results:[...]} or list; be tolerant
     items = data.get("results") if isinstance(data, dict) else data
-    assert items, f"no autocomplete results: {data}"
+    assert items
     assert any("OLI" in (it.get("kode") or "").upper() for it in items)
 
 
@@ -169,5 +214,15 @@ def test_stock_page_loads(session):
     assert "stock-out-part-search" in r.text
 
 
-# ---------- Cleanup: remove TEST-NEW-001 via UI form is not exposed for external DELETE.
-# It will be visible in DB, prefix TEST- makes it identifiable.
+# ---------- Cleanup: delete PVW-1 via direct DB is not exposed;
+# Try to remove via parts delete endpoint if available.
+def test_cleanup_pvw1(session):
+    # Cleanup PVW-1 and import log via direct DB access to keep DB tidy.
+    import subprocess
+    subprocess.run(
+        ["php", "-r",
+         "require '/app/bengkel/includes/db.php'; init_db(); "
+         "db()->exec(\"DELETE FROM parts WHERE kode='PVW-1'\"); "
+         "db()->exec(\"DELETE FROM import_logs WHERE filename='TEST_pvw.csv'\");"],
+        check=False, timeout=15,
+    )

@@ -209,6 +209,23 @@ function init_db(): void {
         INDEX (nama), INDEX (tipe)
     ) $eng");
 
+    // Riwayat setiap eksekusi Import Excel/CSV sparepart (menu Sparepart).
+    // Menyimpan nama file, mode, ringkasan angka, dan user yang mengeksekusi.
+    $db->exec("CREATE TABLE IF NOT EXISTS import_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL DEFAULT '',
+        mode VARCHAR(20) NOT NULL DEFAULT 'upgrade',
+        total INT NOT NULL DEFAULT 0,
+        inserted INT NOT NULL DEFAULT 0,
+        updated INT NOT NULL DEFAULT 0,
+        skipped INT NOT NULL DEFAULT 0,
+        invalid INT NOT NULL DEFAULT 0,
+        user_id INT NULL,
+        user_nama VARCHAR(150) NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX (created_at)
+    ) $eng");
+
     // Seed akun admin default (admin / admin123) jika tabel users kosong
     if ((int) db()->query("SELECT COUNT(*) FROM users")->fetchColumn() === 0) {
         $stmt = db()->prepare("INSERT INTO users (username, password_hash, nama, role) VALUES (?,?,?,?)");

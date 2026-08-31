@@ -63,6 +63,12 @@ if (isset($_GET['edit'])) {
 }
 // Master kategori untuk dropdown pada form input sparepart
 $categories = $db->query("SELECT nama FROM categories ORDER BY nama")->fetchAll(PDO::FETCH_COLUMN);
+
+// Info sinkronisasi katalog hargasukucadang.online (last_hsc_sync) + riwayat import
+$last_sync = setting('last_hsc_sync', '');
+$last_sync_wib = $last_sync ? lokal($last_sync) : '-';
+$catalog_count = (int)$db->query("SELECT COUNT(*) FROM part_catalog")->fetchColumn();
+$import_logs = $db->query("SELECT * FROM import_logs ORDER BY id DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <div class="row g-3">
   <div class="col-lg-4">
@@ -81,8 +87,19 @@ $categories = $db->query("SELECT nama FROM categories ORDER BY nama")->fetchAll(
               <input type="text" id="hscQuery" class="form-control" placeholder="Ketik nama part (mis. shock, kampas rem) atau kode part (mis. 3XP)..." autocomplete="off" data-testid="hsc-query">
               <button type="button" id="hscSearchBtn" class="btn btn-outline-primary" data-testid="hsc-search-btn"><i class="bi bi-search"></i></button>
             </div>
+            <div id="hscFilters" class="d-flex flex-wrap gap-1 mt-1" style="display:none" data-testid="hsc-filters"></div>
             <div id="hscResults" class="list-group mt-1" style="max-height:230px;overflow:auto;display:none" data-testid="hsc-results"></div>
             <div id="hscMsg" class="small text-muted mt-1" style="display:none" data-testid="hsc-msg"></div>
+            <div class="d-flex justify-content-between align-items-center mt-1" style="font-size:11px">
+              <span class="text-muted" data-testid="hsc-sync-info">
+                <i class="bi bi-clock-history me-1"></i>Sync katalog:
+                <span id="hscLastSync"><?= esc($last_sync_wib) ?></span>
+                <span class="text-muted"> · <?= (int)$catalog_count ?> item lokal</span>
+              </span>
+              <button type="button" class="btn btn-link btn-sm p-0" id="hscSyncNowBtn" data-testid="hsc-sync-now-btn" style="font-size:11px">
+                <i class="bi bi-arrow-clockwise me-1"></i>Sync Sekarang
+              </button>
+            </div>
           </div>
           <div class="col-6 mb-2"><label class="form-label small">Kode Sparepart</label>
             <input name="kode" class="form-control form-control-sm" required value="<?= esc($edit['kode'] ?? '') ?>" data-testid="part-kode"></div>
@@ -144,6 +161,47 @@ $categories = $db->query("SELECT nama FROM categories ORDER BY nama")->fetchAll(
           <i class="bi bi-download me-1"></i>Download Format Lama / Upgrade
         </button>
       </div>
+    </div></div>
+
+    <div class="card table-card mt-3" data-testid="import-history-card"><div class="card-body">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h2 class="h6 mb-0"><i class="bi bi-clock-history me-1"></i>Riwayat Import</h2>
+        <span class="badge bg-light text-muted" data-testid="import-history-count"><?= count($import_logs) ?> log</span>
+      </div>
+      <?php if (!$import_logs): ?>
+        <div class="small text-muted" data-testid="import-history-empty">Belum ada riwayat import.</div>
+      <?php else: ?>
+      <div class="table-responsive" style="max-height:280px">
+        <table class="table table-sm align-middle mb-0" data-testid="import-history-table">
+          <thead><tr>
+            <th class="small">Waktu</th>
+            <th class="small">File</th>
+            <th class="small">Mode</th>
+            <th class="small text-end">Baru</th>
+            <th class="small text-end">Update</th>
+            <th class="small text-end">Skip</th>
+            <th class="small">Oleh</th>
+          </tr></thead>
+          <tbody>
+          <?php foreach ($import_logs as $lg): ?>
+            <tr data-testid="import-history-row-<?= (int)$lg['id'] ?>">
+              <td class="small text-muted"><?= esc(lokal($lg['created_at'])) ?></td>
+              <td class="small"><?= esc($lg['filename']) ?></td>
+              <td>
+                <span class="badge bg-<?= $lg['mode'] === 'baru' ? 'success' : 'warning text-dark' ?>">
+                  <?= $lg['mode'] === 'baru' ? 'Baru' : 'Upgrade' ?>
+                </span>
+              </td>
+              <td class="text-end small text-success"><?= (int)$lg['inserted'] ?></td>
+              <td class="text-end small text-warning"><?= (int)$lg['updated'] ?></td>
+              <td class="text-end small text-muted"><?= (int)$lg['skipped'] ?></td>
+              <td class="small text-muted"><?= esc($lg['user_nama'] ?: '-') ?></td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+      <?php endif; ?>
     </div></div>
   </div>
 
@@ -212,7 +270,10 @@ scanModal.addEventListener('shown.bs.modal', e => {
 });
 scanModal.addEventListener('hidden.bs.modal', () => { if (scannerObj) scannerObj.stop().catch(()=>{}); });
 
-// Import Excel/CSV di sisi browser (SheetJS), hasil dikirim JSON ke server
+// Import Excel/CSV di sisi browser (SheetJS), hasil dikirim JSON ke server.
+// Alur: pilih file -> minta preview -> user klik "Konfirmasi Import" -> commit.
+let importState = { rows: [], filename: '', mode: 'baru' };
+
 document.getElementById('importFile').addEventListener('change', function() {
   const f = this.files[0]; if (!f) return;
   const mode = (document.querySelector('input[name="importMode"]:checked') || {}).value || 'baru';
@@ -220,17 +281,96 @@ document.getElementById('importFile').addEventListener('change', function() {
   reader.onload = async e => {
     const wb = XLSX.read(e.target.result, { type: 'array' });
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-    const res = await fetch('ajax/import_parts.php', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows, mode })
-    });
-    const data = await res.json();
-    const el = document.getElementById('importResult');
-    el.innerHTML = '<div class="alert alert-' + (data.ok ? 'success' : 'danger') + ' py-2">' + data.message + '</div>';
-    if (data.ok) setTimeout(() => location.reload(), 1500);
+    importState = { rows, filename: f.name, mode };
+    await requestPreview();
   };
   reader.readAsArrayBuffer(f);
 });
+
+async function requestPreview() {
+  const el = document.getElementById('importResult');
+  el.innerHTML = '<div class="alert alert-info py-2"><span class="spinner-border spinner-border-sm me-2"></span>Menyiapkan pratinjau...</div>';
+  const res = await fetch('ajax/import_parts.php', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows: importState.rows, mode: importState.mode, preview: 1, filename: importState.filename })
+  });
+  const data = await res.json();
+  el.innerHTML = '';
+  if (!data.ok || !data.preview) {
+    el.innerHTML = '<div class="alert alert-danger py-2">' + (data.message || 'Gagal memuat pratinjau.') + '</div>';
+    return;
+  }
+  renderPreviewModal(data);
+}
+
+function renderPreviewModal(data) {
+  const s = data.summary || {};
+  const badgeMap = {
+    new:     '<span class="badge bg-success" data-testid="preview-badge-new">Baru</span>',
+    update:  '<span class="badge bg-warning text-dark" data-testid="preview-badge-update">Update</span>',
+    skip:    '<span class="badge bg-secondary" data-testid="preview-badge-skip">Dilewati</span>',
+    invalid: '<span class="badge bg-danger" data-testid="preview-badge-invalid">Invalid</span>',
+  };
+  const bodyRows = (data.rows || []).map(function (r) {
+    return '<tr data-testid="preview-row" data-status="' + r.status + '">'
+      + '<td class="small text-muted">' + r.row + '</td>'
+      + '<td><code>' + escHtml(r.kode) + '</code></td>'
+      + '<td class="small">' + escHtml(r.nama) + '</td>'
+      + '<td class="small">' + escHtml(r.kategori) + '</td>'
+      + '<td class="text-end small">' + r.stok + '</td>'
+      + '<td>' + (badgeMap[r.status] || r.status) + '</td>'
+      + '<td class="small text-muted">' + escHtml(r.reason) + '</td>'
+      + '</tr>';
+  }).join('');
+  const html =
+    '<div class="modal fade" id="importPreviewModal" tabindex="-1" data-testid="import-preview-modal">'
+    + '<div class="modal-dialog modal-xl modal-dialog-scrollable">'
+    + '<div class="modal-content">'
+    + '<div class="modal-header">'
+    + '<h5 class="modal-title"><i class="bi bi-clipboard-data me-1"></i>Pratinjau Import — mode <strong>' + (data.mode === 'baru' ? 'Baru' : 'Upgrade') + '</strong></h5>'
+    + '<button type="button" class="btn-close" data-bs-dismiss="modal"></button>'
+    + '</div>'
+    + '<div class="modal-body">'
+    + '<div class="d-flex gap-2 mb-2 flex-wrap" data-testid="import-preview-summary">'
+    +   '<span class="badge bg-primary">Total: ' + (s.total||0) + '</span>'
+    +   '<span class="badge bg-success" data-testid="preview-summary-new">Baru: ' + (s.new||0) + '</span>'
+    +   '<span class="badge bg-warning text-dark" data-testid="preview-summary-update">Update: ' + (s.update||0) + '</span>'
+    +   '<span class="badge bg-secondary" data-testid="preview-summary-skip">Dilewati: ' + (s.skip||0) + '</span>'
+    +   '<span class="badge bg-danger" data-testid="preview-summary-invalid">Invalid: ' + (s.invalid||0) + '</span>'
+    + '</div>'
+    + '<div class="table-responsive" style="max-height:60vh">'
+    + '<table class="table table-sm align-middle" data-testid="import-preview-table">'
+    + '<thead><tr><th>#</th><th>Kode</th><th>Nama</th><th>Kategori</th><th class="text-end">Stok</th><th>Status</th><th>Catatan</th></tr></thead>'
+    + '<tbody>' + bodyRows + '</tbody></table></div></div>'
+    + '<div class="modal-footer">'
+    + '<button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-testid="import-preview-cancel">Batal</button>'
+    + '<button type="button" id="importPreviewConfirm" class="btn btn-primary" data-testid="import-preview-confirm">'
+    +   '<i class="bi bi-check2-circle me-1"></i>Konfirmasi Import (' + ((s.new||0)+(s.update||0)) + ' baris)'
+    + '</button>'
+    + '</div></div></div></div>';
+  // Hapus modal lama jika ada, lalu render baru dan tampilkan.
+  const old = document.getElementById('importPreviewModal'); if (old) old.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+  const modalEl = document.getElementById('importPreviewModal');
+  const modal = new bootstrap.Modal(modalEl);
+  modalEl.querySelector('#importPreviewConfirm').addEventListener('click', function () { confirmImport(modal); });
+  modal.show();
+}
+
+async function confirmImport(modal) {
+  const el = document.getElementById('importResult');
+  el.innerHTML = '<div class="alert alert-info py-2"><span class="spinner-border spinner-border-sm me-2"></span>Menyimpan import...</div>';
+  const res = await fetch('ajax/import_parts.php', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows: importState.rows, mode: importState.mode, filename: importState.filename })
+  });
+  const data = await res.json();
+  el.innerHTML = '<div class="alert alert-' + (data.ok ? 'success' : 'danger') + ' py-2">' + data.message + '</div>';
+  if (modal) modal.hide();
+  if (data.ok) setTimeout(() => location.reload(), 1500);
+}
+
+function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 // Update hint teks sesuai mode terpilih
 document.querySelectorAll('input[name="importMode"]').forEach(function (r) {
@@ -274,6 +414,9 @@ function downloadTemplate(mode) {
   const btn = document.getElementById('hscSearchBtn');
   const box = document.getElementById('hscResults');
   const msg = document.getElementById('hscMsg');
+  const filters = document.getElementById('hscFilters');
+  const syncBtn = document.getElementById('hscSyncNowBtn');
+  const lastSyncEl = document.getElementById('hscLastSync');
   if (!q || !btn) return;
 
   const form = document.querySelector('form[data-testid="part-form"]');
@@ -281,12 +424,13 @@ function downloadTemplate(mode) {
   const namaInput = form ? form.querySelector('[name="nama"]') : null;
   const katSelect = form ? form.querySelector('[name="kategori"]') : null;
 
+  let lastResults = [];      // hasil terakhir dari server
+  let activeTipeFilter = ''; // filter tipe yang sedang aktif ('' = semua)
+
   function showMsg(t, cls) { msg.className = 'small mt-1 ' + (cls || 'text-muted'); msg.textContent = t; msg.style.display = t ? 'block' : 'none'; }
-  function clearResults() { box.innerHTML = ''; box.style.display = 'none'; }
+  function clearResults() { box.innerHTML = ''; box.style.display = 'none'; filters.innerHTML = ''; filters.style.display = 'none'; }
   function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-  // Sisipkan / pilih opsi kategori pada dropdown. Jika kategori belum ada di
-  // master, tambahkan sebagai opsi dinamis (akan diregistrasikan ke master saat form disimpan).
   function setKategori(val) {
     if (!katSelect || !val) return;
     var v = String(val).trim();
@@ -304,48 +448,85 @@ function downloadTemplate(mode) {
     katSelect.value = v;
   }
 
+  function renderFilters(rows) {
+    // Kumpulkan daftar unik tipe (kategori/tipe motor) dari hasil.
+    const counts = new Map();
+    rows.forEach(function (r) { const t = (r.tipe || '').trim(); if (!t) return; counts.set(t, (counts.get(t) || 0) + 1); });
+    const items = Array.from(counts.entries()).sort(function (a, b) { return b[1] - a[1] || a[0].localeCompare(b[0]); });
+    filters.innerHTML = '';
+    if (!items.length) { filters.style.display = 'none'; return; }
+    const mkChip = function (label, val, count, isActive) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-sm ' + (isActive ? 'btn-primary' : 'btn-outline-secondary') + ' py-0 px-2';
+      b.style.fontSize = '11px';
+      b.setAttribute('data-testid', 'hsc-filter-chip');
+      b.setAttribute('data-tipe', val);
+      b.innerHTML = esc(label) + ' <span class="badge bg-light text-dark ms-1" style="font-size:10px">' + count + '</span>';
+      b.addEventListener('click', function () { activeTipeFilter = val; renderResults(); });
+      return b;
+    };
+    filters.appendChild(mkChip('Semua', '', rows.length, activeTipeFilter === ''));
+    items.forEach(function (it) { filters.appendChild(mkChip(it[0], it[0], it[1], activeTipeFilter === it[0])); });
+    filters.style.display = 'flex';
+  }
+
+  function renderResults() {
+    const rows = activeTipeFilter
+      ? lastResults.filter(function (r) { return (r.tipe || '') === activeTipeFilter; })
+      : lastResults;
+    renderFilters(lastResults);
+    box.innerHTML = '';
+    if (!rows.length) {
+      box.style.display = 'none';
+      showMsg('Tidak ada hasil setelah filter "' + activeTipeFilter + '".', 'text-warning');
+      return;
+    }
+    rows.forEach(function (it) {
+      const st = (it.status || '').toUpperCase();
+      const badge = st === 'AKTIF' ? 'success' : (st === 'STOP' ? 'secondary' : 'info');
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'list-group-item list-group-item-action py-1';
+      el.setAttribute('data-testid', 'hsc-result-item');
+      el.innerHTML =
+        '<div class="d-flex justify-content-between align-items-center">' +
+        '<span class="fw-semibold small">' + esc(it.kode) + '</span>' +
+        '<span class="badge bg-' + badge + '" style="font-size:10px">' + esc(it.status || '-') + '</span></div>' +
+        '<div class="small">' + esc(it.nama) + '</div>' +
+        '<div class="text-muted" style="font-size:10px">' + (it.tipe ? ('Kategori: ' + esc(it.tipe) + ' &bull; ') : '') + 'Harga ref: ' + esc(it.harga || '-') + '</div>';
+      el.addEventListener('click', function () {
+        if (kodeInput) kodeInput.value = it.kode;
+        if (namaInput) namaInput.value = it.nama;
+        setKategori(it.tipe);
+        clearResults();
+        showMsg('Terisi: ' + it.kode + ' - ' + it.nama + (it.tipe ? ' [Kategori: ' + it.tipe + ']' : ''), 'text-success');
+        if (namaInput) namaInput.focus();
+      });
+      box.appendChild(el);
+    });
+    box.style.display = 'block';
+  }
+
   async function doSearch() {
     const term = q.value.trim();
     if (term.length < 2) { showMsg('Kata kunci minimal 2 karakter.', 'text-danger'); clearResults(); return; }
     showMsg('Mencari di hargasukucadang.online...'); clearResults(); btn.disabled = true;
     try {
-      // field=auto: server akan otomatis memilih pencarian by-kode atau by-nama.
       const url = 'ajax/lookup_hsc.php?field=auto&q=' + encodeURIComponent(term);
       const r = await fetch(url, { headers: { 'X-Requested-With': 'fetch' } });
       const data = await r.json();
       btn.disabled = false;
       if (data.error) { showMsg(data.error, 'text-danger'); return; }
-      const rows = data.results || [];
-      if (!rows.length) { showMsg('Tidak ada hasil untuk "' + term + '".', 'text-warning'); return; }
+      lastResults = data.results || [];
+      activeTipeFilter = '';
+      if (!lastResults.length) { showMsg('Tidak ada hasil untuk "' + term + '".', 'text-warning'); return; }
       if (data.offline) {
-        showMsg('Situs sumber sedang offline. Menampilkan ' + rows.length + ' hasil dari katalog lokal. Klik untuk memakai.', 'text-warning');
+        showMsg('Situs sumber sedang offline. Menampilkan ' + lastResults.length + ' hasil dari katalog lokal.', 'text-warning');
       } else {
-        showMsg(rows.length + ' hasil. Klik salah satu untuk memakainya.', 'text-success');
+        showMsg(lastResults.length + ' hasil. Klik salah satu untuk memakainya, atau filter per kategori di atas.', 'text-success');
       }
-      box.style.display = 'block';
-      rows.forEach(function (it) {
-        const st = (it.status || '').toUpperCase();
-        const badge = st === 'AKTIF' ? 'success' : (st === 'STOP' ? 'secondary' : 'info');
-        const el = document.createElement('button');
-        el.type = 'button';
-        el.className = 'list-group-item list-group-item-action py-1';
-        el.setAttribute('data-testid', 'hsc-result-item');
-        el.innerHTML =
-          '<div class="d-flex justify-content-between align-items-center">' +
-          '<span class="fw-semibold small">' + esc(it.kode) + '</span>' +
-          '<span class="badge bg-' + badge + '" style="font-size:10px">' + esc(it.status || '-') + '</span></div>' +
-          '<div class="small">' + esc(it.nama) + '</div>' +
-          '<div class="text-muted" style="font-size:10px">' + (it.tipe ? ('Kategori: ' + esc(it.tipe) + ' &bull; ') : '') + 'Harga ref: ' + esc(it.harga || '-') + '</div>';
-        el.addEventListener('click', function () {
-          if (kodeInput) kodeInput.value = it.kode;
-          if (namaInput) namaInput.value = it.nama;
-          setKategori(it.tipe);
-          clearResults();
-          showMsg('Terisi: ' + it.kode + ' - ' + it.nama + (it.tipe ? ' [Kategori: ' + it.tipe + ']' : ''), 'text-success');
-          if (namaInput) namaInput.focus();
-        });
-        box.appendChild(el);
-      });
+      renderResults();
     } catch (e) {
       btn.disabled = false;
       showMsg('Gagal memuat hasil. Periksa koneksi internet server.', 'text-danger');
@@ -354,5 +535,33 @@ function downloadTemplate(mode) {
 
   btn.addEventListener('click', doSearch);
   q.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+
+  // Sync Sekarang: refresh katalog HSC on-demand.
+  if (syncBtn) {
+    syncBtn.addEventListener('click', async function () {
+      const original = syncBtn.innerHTML;
+      syncBtn.disabled = true;
+      syncBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Sync berjalan...';
+      try {
+        const r = await fetch('ajax/sync_hsc.php', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok) {
+          const s = data.result || {};
+          showMsg('Sync selesai: ' + (s.rows || 0) + ' baris, +' + (s.inserted || 0) + ' baru, ~' + (s.updated || 0) + ' update, ' + (s.errors ? (s.errors.length || 0) : 0) + ' error.', 'text-success');
+          if (lastSyncEl && data.last_sync) {
+            const d = new Date(data.last_sync);
+            lastSyncEl.textContent = d.toLocaleString('id-ID');
+          }
+        } else {
+          showMsg('Sync gagal.', 'text-danger');
+        }
+      } catch (e) {
+        showMsg('Sync gagal: ' + e.message, 'text-danger');
+      } finally {
+        syncBtn.disabled = false;
+        syncBtn.innerHTML = original;
+      }
+    });
+  }
 })();
 </script>
