@@ -51,10 +51,33 @@ $sql = "SELECT * FROM parts";
 $where = []; $params = [];
 if ($q !== '') { $where[] = "(nama LIKE ? OR kode LIKE ? OR barcode LIKE ?)"; $params = ["%$q%", "%$q%", "%$q%"]; }
 if ($filter === 'low') { $where[] = "stok <= stok_min"; }
-if ($where) $sql .= " WHERE " . implode(' AND ', $where);
-$sql .= " ORDER BY id DESC";
+$whereSql = $where ? (" WHERE " . implode(' AND ', $where)) : '';
+
+// --- Pagination -----------------------------------------------------------
+// Batasi 50 sparepart per halaman secara default agar tabel tidak terlalu
+// panjang. User dapat memilih 25/50/100/200 baris per halaman.
+$per_page_opts = [25, 50, 100, 200];
+$per_page = (int)($_GET['per_page'] ?? 50);
+if (!in_array($per_page, $per_page_opts, true)) $per_page = 50;
+$countStmt = $db->prepare("SELECT COUNT(*) FROM parts" . $whereSql);
+$countStmt->execute($params);
+$total_rows = (int)$countStmt->fetchColumn();
+$total_pages = max(1, (int)ceil($total_rows / $per_page));
+$cur_page = max(1, (int)($_GET['p'] ?? 1));
+if ($cur_page > $total_pages) $cur_page = $total_pages;
+$offset = ($cur_page - 1) * $per_page;
+
+$sql .= $whereSql . " ORDER BY id DESC LIMIT $per_page OFFSET $offset";
 $stmt = $db->prepare($sql); $stmt->execute($params);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Builder link pagination yang mempertahankan filter & keyword pencarian.
+$paginate_url = function ($p) use ($q, $filter, $per_page) {
+    $qs = ['page' => 'parts', 'p' => $p, 'per_page' => $per_page];
+    if ($q !== '') $qs['q'] = $q;
+    if ($filter !== '') $qs['filter'] = $filter;
+    return 'index.php?' . http_build_query($qs);
+};
 
 $edit = null;
 if (isset($_GET['edit'])) {
@@ -212,11 +235,19 @@ $import_logs = $db->query("SELECT * FROM import_logs ORDER BY id DESC LIMIT 20")
         <a class="btn btn-sm btn-outline-success" href="export.php?type=parts&format=xls" data-testid="parts-export-xls"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a>
         <a class="btn btn-sm btn-outline-primary" href="export.php?type=parts&format=doc" data-testid="parts-export-doc"><i class="bi bi-file-earmark-word me-1"></i>Word</a>
       </div>
-      <form class="d-flex mb-3" method="get">
+      <form class="d-flex mb-3 flex-wrap gap-2" method="get">
         <input type="hidden" name="page" value="parts">
-        <input name="q" class="form-control form-control-sm me-2" placeholder="Cari nama / kode / barcode..." value="<?= esc($q) ?>" data-testid="part-search">
-        <button class="btn btn-sm btn-outline-primary me-2" data-testid="part-search-btn"><i class="bi bi-search"></i></button>
+        <input name="q" class="form-control form-control-sm" style="max-width:280px" placeholder="Cari nama / kode / barcode..." value="<?= esc($q) ?>" data-testid="part-search">
+        <button class="btn btn-sm btn-outline-primary" data-testid="part-search-btn"><i class="bi bi-search"></i></button>
         <a href="index.php?page=parts&filter=low" class="btn btn-sm btn-outline-danger text-nowrap" data-testid="part-low-filter"><i class="bi bi-exclamation-triangle me-1"></i>Stok Menipis</a>
+        <div class="ms-auto d-flex align-items-center gap-1">
+          <label class="small text-muted mb-0" for="perPageSelect">Tampilkan</label>
+          <select id="perPageSelect" name="per_page" class="form-select form-select-sm" style="width:auto" onchange="this.form.submit()" data-testid="part-per-page">
+            <?php foreach ($per_page_opts as $opt): ?>
+              <option value="<?= $opt ?>" <?= $per_page === $opt ? 'selected' : '' ?>><?= $opt ?>/hlm</option>
+            <?php endforeach; ?>
+          </select>
+        </div>
       </form>
       <div class="table-responsive">
       <table class="table table-sm align-middle" data-testid="parts-table">
@@ -242,6 +273,53 @@ $import_logs = $db->query("SELECT * FROM import_logs ORDER BY id DESC LIMIT 20")
         <?php endforeach; ?>
         </tbody>
       </table>
+      </div>
+      <?php
+        // --- Kontrol pagination ------------------------------------------
+        $from_no = $total_rows ? ($offset + 1) : 0;
+        $to_no   = min($offset + $per_page, $total_rows);
+      ?>
+      <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-2" data-testid="parts-pagination">
+        <div class="small text-muted" data-testid="parts-pagination-info">
+          Menampilkan <strong><?= $from_no ?>&ndash;<?= $to_no ?></strong> dari <strong><?= $total_rows ?></strong> sparepart
+          <?php if ($q !== '' || $filter !== ''): ?>
+            (hasil filter<?php if ($q !== ''): ?> pencarian "<?= esc($q) ?>"<?php endif; ?><?php if ($filter === 'low'): ?> stok menipis<?php endif; ?>)
+          <?php endif; ?>
+        </div>
+        <?php if ($total_pages > 1): ?>
+        <nav aria-label="Pagination sparepart">
+          <ul class="pagination pagination-sm mb-0" data-testid="parts-pagination-nav">
+            <li class="page-item <?= $cur_page <= 1 ? 'disabled' : '' ?>">
+              <a class="page-link" href="<?= $cur_page > 1 ? esc($paginate_url($cur_page - 1)) : '#' ?>" data-testid="parts-page-prev" aria-label="Sebelumnya">
+                <i class="bi bi-chevron-left"></i>
+              </a>
+            </li>
+            <?php
+              // Tampilkan jendela halaman di sekitar halaman aktif (+/- 2)
+              $start = max(1, $cur_page - 2);
+              $end   = min($total_pages, $cur_page + 2);
+              if ($start > 1):
+            ?>
+              <li class="page-item"><a class="page-link" href="<?= esc($paginate_url(1)) ?>" data-testid="parts-page-1">1</a></li>
+              <?php if ($start > 2): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?>
+            <?php endif; ?>
+            <?php for ($i = $start; $i <= $end; $i++): ?>
+              <li class="page-item <?= $i === $cur_page ? 'active' : '' ?>">
+                <a class="page-link" href="<?= esc($paginate_url($i)) ?>" data-testid="parts-page-<?= $i ?>"><?= $i ?></a>
+              </li>
+            <?php endfor; ?>
+            <?php if ($end < $total_pages): ?>
+              <?php if ($end < $total_pages - 1): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?>
+              <li class="page-item"><a class="page-link" href="<?= esc($paginate_url($total_pages)) ?>" data-testid="parts-page-<?= $total_pages ?>"><?= $total_pages ?></a></li>
+            <?php endif; ?>
+            <li class="page-item <?= $cur_page >= $total_pages ? 'disabled' : '' ?>">
+              <a class="page-link" href="<?= $cur_page < $total_pages ? esc($paginate_url($cur_page + 1)) : '#' ?>" data-testid="parts-page-next" aria-label="Berikutnya">
+                <i class="bi bi-chevron-right"></i>
+              </a>
+            </li>
+          </ul>
+        </nav>
+        <?php endif; ?>
       </div>
     </div></div>
   </div>
