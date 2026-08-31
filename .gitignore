@@ -80,3 +80,10 @@ memory/test_credentials.md
 
 # Mobile development
 android-sdk/.mariadb_data/ib_logfile0
+.env
+.env.*
+*.env
+credentials.json
+*.key
+.credentials
+.mariadb_data/ib_logfile0
