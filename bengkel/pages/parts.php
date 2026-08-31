@@ -6,11 +6,17 @@ $action = $_POST['action'] ?? '';
 if ($action === 'save') {
     $id = (int)($_POST['id'] ?? 0);
     $kode = strtoupper(trim($_POST['kode'] ?? ''));
+    $kategori = trim($_POST['kategori'] ?? '');
+    // Kategori baru (mis. hasil auto-fill dari hargasukucadang.online) otomatis
+    // didaftarkan ke master kategori supaya muncul di dropdown selanjutnya.
+    if ($kategori !== '') {
+        $db->prepare("INSERT IGNORE INTO categories (nama) VALUES (?)")->execute([$kategori]);
+    }
     $data = [
         $kode,
         trim($_POST['barcode'] ?? ''),
         trim($_POST['nama'] ?? ''),
-        trim($_POST['kategori'] ?? ''),
+        $kategori,
         (float)($_POST['harga_beli'] ?? 0),
         (float)($_POST['harga_jual'] ?? 0),
         (int)($_POST['stok'] ?? 0),
@@ -69,15 +75,10 @@ $categories = $db->query("SELECT nama FROM categories ORDER BY nama")->fetchAll(
           <div class="col-12 mb-2">
             <label class="form-label small mb-1">
               <i class="bi bi-cloud-download me-1"></i>Cari dari hargasukucadang.online
-              <span class="text-muted" style="font-size:11px">— klik hasil untuk mengisi Kode &amp; Nama</span>
+              <span class="text-muted" style="font-size:11px">— klik hasil untuk mengisi Kode, Nama &amp; Kategori</span>
             </label>
             <div class="input-group input-group-sm">
-              <select id="hscField" class="form-select flex-grow-0" style="max-width:78px" data-testid="hsc-field">
-                <option value="nama">Nama</option>
-                <option value="kode">Kode</option>
-                <option value="tipe">Tipe</option>
-              </select>
-              <input type="text" id="hscQuery" class="form-control" placeholder="mis. shock, kampas rem, 3XP..." autocomplete="off" data-testid="hsc-query">
+              <input type="text" id="hscQuery" class="form-control" placeholder="Ketik nama part (mis. shock, kampas rem) atau kode part (mis. 3XP)..." autocomplete="off" data-testid="hsc-query">
               <button type="button" id="hscSearchBtn" class="btn btn-outline-primary" data-testid="hsc-search-btn"><i class="bi bi-search"></i></button>
             </div>
             <div id="hscResults" class="list-group mt-1" style="max-height:230px;overflow:auto;display:none" data-testid="hsc-results"></div>
@@ -114,10 +115,35 @@ $categories = $db->query("SELECT nama FROM categories ORDER BY nama")->fetchAll(
 
     <div class="card table-card mt-3"><div class="card-body">
       <h2 class="h6">Import Excel / CSV</h2>
-      <p class="small text-muted mb-2">Format kolom: <code>kode, nama, kategori, harga_beli, harga_jual, stok, stok_min, barcode</code>. Kode yang sudah ada akan diperbarui.</p>
+      <p class="small text-muted mb-2">
+        Format kolom: <code>kode, nama, kategori, harga_beli, harga_jual, stok, stok_min, barcode</code>.
+      </p>
+      <div class="mb-2">
+        <label class="form-label small mb-1">Mode Import</label>
+        <div class="btn-group btn-group-sm w-100" role="group" data-testid="import-mode-group">
+          <input type="radio" class="btn-check" name="importMode" id="importModeBaru" value="baru" checked data-testid="import-mode-baru">
+          <label class="btn btn-outline-success" for="importModeBaru" title="Hanya menambahkan sparepart baru. Kode yang sudah ada akan dilewati.">
+            <i class="bi bi-plus-circle me-1"></i>Format Baru (tambah)
+          </label>
+          <input type="radio" class="btn-check" name="importMode" id="importModeUpgrade" value="upgrade" data-testid="import-mode-upgrade">
+          <label class="btn btn-outline-warning" for="importModeUpgrade" title="Update data lama & tambahkan sparepart baru (upsert).">
+            <i class="bi bi-arrow-repeat me-1"></i>Format Lama/Upgrade
+          </label>
+        </div>
+        <div class="small text-muted mt-1" id="importModeHint" data-testid="import-mode-hint">
+          Mode "Baru": hanya menambahkan sparepart baru, kode yang sudah ada akan dilewati.
+        </div>
+      </div>
       <input type="file" id="importFile" accept=".xlsx,.xls,.csv" class="form-control form-control-sm mb-2" data-testid="import-file">
       <div id="importResult" class="small" data-testid="import-result"></div>
-      <button type="button" class="btn btn-sm btn-outline-success w-100 mt-1" onclick="downloadTemplate()" data-testid="import-template-btn"><i class="bi bi-download me-1"></i>Download Template CSV</button>
+      <div class="d-grid gap-1 mt-1">
+        <button type="button" class="btn btn-sm btn-outline-success" onclick="downloadTemplate('baru')" data-testid="import-template-baru-btn">
+          <i class="bi bi-download me-1"></i>Download Format Baru (Tambah Sparepart)
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-warning" onclick="downloadTemplate('upgrade')" data-testid="import-template-upgrade-btn">
+          <i class="bi bi-download me-1"></i>Download Format Lama / Upgrade
+        </button>
+      </div>
     </div></div>
   </div>
 
@@ -189,13 +215,14 @@ scanModal.addEventListener('hidden.bs.modal', () => { if (scannerObj) scannerObj
 // Import Excel/CSV di sisi browser (SheetJS), hasil dikirim JSON ke server
 document.getElementById('importFile').addEventListener('change', function() {
   const f = this.files[0]; if (!f) return;
+  const mode = (document.querySelector('input[name="importMode"]:checked') || {}).value || 'baru';
   const reader = new FileReader();
   reader.onload = async e => {
     const wb = XLSX.read(e.target.result, { type: 'array' });
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
     const res = await fetch('ajax/import_parts.php', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows })
+      body: JSON.stringify({ rows, mode })
     });
     const data = await res.json();
     const el = document.getElementById('importResult');
@@ -205,11 +232,38 @@ document.getElementById('importFile').addEventListener('change', function() {
   reader.readAsArrayBuffer(f);
 });
 
-function downloadTemplate() {
-  const csv = "kode,nama,kategori,harga_beli,harga_jual,stok,stok_min,barcode\nOLI-MPX,Oli MPX 0.8L,Oli,35000,45000,10,5,899123456001\n";
+// Update hint teks sesuai mode terpilih
+document.querySelectorAll('input[name="importMode"]').forEach(function (r) {
+  r.addEventListener('change', function () {
+    const hint = document.getElementById('importModeHint');
+    if (!hint) return;
+    hint.textContent = r.value === 'upgrade'
+      ? 'Mode "Upgrade": kode yang sudah ada akan diperbarui datanya (nama, kategori, harga, stok), yang belum ada akan ditambahkan.'
+      : 'Mode "Baru": hanya menambahkan sparepart baru, kode yang sudah ada akan dilewati.';
+  });
+});
+
+function downloadTemplate(mode) {
+  mode = mode || 'baru';
+  const header = "kode,nama,kategori,harga_beli,harga_jual,stok,stok_min,barcode";
+  let content, filename;
+  if (mode === 'upgrade') {
+    // Format lama/upgrade: baris contoh menyertakan kode yang mungkin sudah ada
+    // untuk memperbarui datanya, plus baris baru untuk ditambahkan.
+    content = header + "\n"
+      + "OLI-MPX,Oli MPX 0.8L (update),Oli,36000,48000,25,5,899123456001\n"
+      + "KMP-BARU,Kampas Rem Baru,Kampas Rem,45000,65000,10,5,899123456999\n";
+    filename = 'template_sparepart_upgrade.csv';
+  } else {
+    // Format baru: fokus menambah sparepart baru saja.
+    content = header + "\n"
+      + "OLI-MPX,Oli MPX 0.8L,Oli,35000,45000,10,5,899123456001\n"
+      + "BSI-01,Busi Standar NGK,Busi,15000,25000,20,5,899123456002\n";
+    filename = 'template_sparepart_baru.csv';
+  }
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-  a.download = 'template_sparepart.csv'; a.click();
+  a.href = URL.createObjectURL(new Blob([content], { type: 'text/csv' }));
+  a.download = filename; a.click();
 }
 
 // ============================================================
@@ -217,7 +271,6 @@ function downloadTemplate() {
 // ============================================================
 (function () {
   const q = document.getElementById('hscQuery');
-  const field = document.getElementById('hscField');
   const btn = document.getElementById('hscSearchBtn');
   const box = document.getElementById('hscResults');
   const msg = document.getElementById('hscMsg');
@@ -226,17 +279,38 @@ function downloadTemplate() {
   const form = document.querySelector('form[data-testid="part-form"]');
   const kodeInput = form ? form.querySelector('[name="kode"]') : null;
   const namaInput = form ? form.querySelector('[name="nama"]') : null;
+  const katSelect = form ? form.querySelector('[name="kategori"]') : null;
 
   function showMsg(t, cls) { msg.className = 'small mt-1 ' + (cls || 'text-muted'); msg.textContent = t; msg.style.display = t ? 'block' : 'none'; }
   function clearResults() { box.innerHTML = ''; box.style.display = 'none'; }
   function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+  // Sisipkan / pilih opsi kategori pada dropdown. Jika kategori belum ada di
+  // master, tambahkan sebagai opsi dinamis (akan diregistrasikan ke master saat form disimpan).
+  function setKategori(val) {
+    if (!katSelect || !val) return;
+    var v = String(val).trim();
+    if (!v) return;
+    var found = false;
+    for (var i = 0; i < katSelect.options.length; i++) {
+      if (katSelect.options[i].value === v) { found = true; break; }
+    }
+    if (!found) {
+      var opt = document.createElement('option');
+      opt.value = v; opt.textContent = v + ' (dari hargasukucadang.online)';
+      opt.setAttribute('data-hsc', '1');
+      katSelect.appendChild(opt);
+    }
+    katSelect.value = v;
+  }
 
   async function doSearch() {
     const term = q.value.trim();
     if (term.length < 2) { showMsg('Kata kunci minimal 2 karakter.', 'text-danger'); clearResults(); return; }
     showMsg('Mencari di hargasukucadang.online...'); clearResults(); btn.disabled = true;
     try {
-      const url = 'ajax/lookup_hsc.php?field=' + encodeURIComponent(field.value) + '&q=' + encodeURIComponent(term);
+      // field=auto: server akan otomatis memilih pencarian by-kode atau by-nama.
+      const url = 'ajax/lookup_hsc.php?field=auto&q=' + encodeURIComponent(term);
       const r = await fetch(url, { headers: { 'X-Requested-With': 'fetch' } });
       const data = await r.json();
       btn.disabled = false;
@@ -261,12 +335,13 @@ function downloadTemplate() {
           '<span class="fw-semibold small">' + esc(it.kode) + '</span>' +
           '<span class="badge bg-' + badge + '" style="font-size:10px">' + esc(it.status || '-') + '</span></div>' +
           '<div class="small">' + esc(it.nama) + '</div>' +
-          '<div class="text-muted" style="font-size:10px">' + (it.tipe ? ('Tipe: ' + esc(it.tipe) + ' &bull; ') : '') + 'Harga ref: ' + esc(it.harga || '-') + '</div>';
+          '<div class="text-muted" style="font-size:10px">' + (it.tipe ? ('Kategori: ' + esc(it.tipe) + ' &bull; ') : '') + 'Harga ref: ' + esc(it.harga || '-') + '</div>';
         el.addEventListener('click', function () {
           if (kodeInput) kodeInput.value = it.kode;
           if (namaInput) namaInput.value = it.nama;
+          setKategori(it.tipe);
           clearResults();
-          showMsg('Terisi: ' + it.kode + ' - ' + it.nama, 'text-success');
+          showMsg('Terisi: ' + it.kode + ' - ' + it.nama + (it.tipe ? ' [Kategori: ' + it.tipe + ']' : ''), 'text-success');
           if (namaInput) namaInput.focus();
         });
         box.appendChild(el);

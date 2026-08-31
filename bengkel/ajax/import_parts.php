@@ -13,6 +13,9 @@ header('Content-Type: application/json');
 
 $payload = json_decode(file_get_contents('php://input'), true);
 $rows = $payload['rows'] ?? [];
+// mode: 'baru' (insert-only, lewati kode yang sudah ada) atau
+//       'upgrade' (upsert: update kode yang sudah ada, tambah yang belum ada)
+$mode = ($payload['mode'] ?? 'upgrade') === 'baru' ? 'baru' : 'upgrade';
 if (!$rows) { echo json_encode(['ok' => false, 'message' => 'File kosong atau format tidak dikenali.']); exit; }
 
 $db = db();
@@ -20,7 +23,7 @@ $find = $db->prepare("SELECT id FROM parts WHERE kode = ?");
 $ins  = $db->prepare("INSERT INTO parts (kode, nama, kategori, harga_beli, harga_jual, stok, stok_min, barcode) VALUES (?,?,?,?,?,?,?,?)");
 $upd  = $db->prepare("UPDATE parts SET nama=?, kategori=?, harga_beli=?, harga_jual=?, stok=?, stok_min=?, barcode=? WHERE kode=?");
 
-$inserted = 0; $updated = 0; $skipped = 0;
+$inserted = 0; $updated = 0; $skipped = 0; $skippedExists = 0;
 $db->beginTransaction();
 foreach ($rows as $r) {
     // Normalisasi nama kolom (dukung variasi huruf besar/kecil & spasi)
@@ -44,7 +47,12 @@ foreach ($rows as $r) {
         trim((string)($row['barcode'] ?? '')),
     ];
     $find->execute([$kode]);
-    if ($find->fetchColumn()) {
+    $exists = (bool)$find->fetchColumn();
+    if ($exists) {
+        if ($mode === 'baru') {
+            $skippedExists++;
+            continue;
+        }
         $upd->execute([...$vals, $kode]);
         $updated++;
     } else {
@@ -53,4 +61,7 @@ foreach ($rows as $r) {
     }
 }
 $db->commit();
-echo json_encode(['ok' => true, 'message' => "Import selesai: $inserted ditambah, $updated diperbarui, $skipped dilewati."]);
+$msg = $mode === 'baru'
+    ? "Import (Format Baru) selesai: $inserted ditambah, $skippedExists dilewati (kode sudah ada), $skipped baris tidak valid."
+    : "Import (Upgrade) selesai: $inserted ditambah, $updated diperbarui, $skipped baris tidak valid.";
+echo json_encode(['ok' => true, 'message' => $msg]);

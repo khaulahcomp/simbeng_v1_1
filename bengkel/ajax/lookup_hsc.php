@@ -11,12 +11,25 @@ require_login();
 init_db();
 header('Content-Type: application/json; charset=utf-8');
 
-$field = $_GET['field'] ?? 'nama';           // nama | kode | tipe
+$field = $_GET['field'] ?? 'auto';           // auto | nama | kode | tipe
 $q     = trim($_GET['q'] ?? '');
 
 if ($q === '' || mb_strlen($q) < 2) {
     echo json_encode(['results' => [], 'source' => 'none', 'error' => 'Kata kunci minimal 2 karakter.']);
     exit;
+}
+
+// Auto-detect: kalau kata kunci mirip kode part (mengandung digit + uppercase,
+// tanpa spasi & lebih dari 3 karakter), utamakan pencarian by kode. Selain itu
+// pakai pencarian by nama. User tidak perlu memilih field lagi.
+if ($field === 'auto') {
+    $noSpace = preg_replace('/\s+/', '', $q);
+    $looksLikeCode = ($noSpace === $q)
+        && strlen($q) >= 3
+        && preg_match('/[0-9]/', $q)
+        && preg_match('/[A-Z0-9\-]/i', $q)
+        && preg_match('/^[A-Z0-9\-]+$/i', $q);
+    $field = $looksLikeCode ? 'kode' : 'nama';
 }
 
 $db = db();
